@@ -2248,9 +2248,20 @@ func (in *Interpreter) Run(node_name string) bool {
 				}
 				in.Save(action.Target, uint64(in.V.Names[string(action.Variables[0])]))
 			case "append":
-				l := in.NamedList(string(action.Variables[0]))
-				ListAppend(&l, in, in.GetAny(string(action.Variables[1])))
-				in.Save(action.Target, l)
+				err := in.CheckArgN(action, 2, 2)
+				if err {
+					return err
+				}
+				err = in.CheckDtype(action, 0, LIST)
+				if err {
+					return err
+				}
+				switch in.V.Slots[in.V.Names[string(action.Variables[0])]].Type {
+				case LIST:
+					l := in.NamedList(string(action.Variables[0]))
+					ListAppend(&l, in, in.GetAny(string(action.Variables[1])))
+					in.Save(action.Target, l)
+				}
 			case "type":
 				err := in.CheckArgN(action, 1, 1)
 				if err {
