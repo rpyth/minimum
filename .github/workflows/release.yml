@@ -60,7 +60,7 @@ jobs:
         uses: actions/download-artifact@v4
         with:
           name: min-binaries-*
-          path: dist
+          path: dist/*
           merge-multiple: true
 
       - name: Create GitHub Release
