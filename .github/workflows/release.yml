@@ -47,7 +47,7 @@ jobs:
       - name: Upload binaries as artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: min-binaries
+          name: min-binaries-${{ matrix.goos }}-${{ matrix.goarch }}
           path: dist/*
 
   release:
@@ -56,11 +56,12 @@ jobs:
     needs: build
 
     steps:
-      - name: Download build artifacts
+      - name: Download all artifacts
         uses: actions/download-artifact@v4
         with:
-          name: min-binaries
+          name: min-binaries-*
           path: dist
+          merge-multiple: true
 
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
