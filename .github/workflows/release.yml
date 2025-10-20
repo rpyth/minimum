@@ -1,0 +1,78 @@
+name: Build and Release
+
+on:
+  push:
+    tags:
+      - 'v*'  # Trigger when you push a version tag like v0.1.0
+
+permissions:
+  contents: write  # Needed to upload release assets
+
+jobs:
+  build:
+    name: Build binaries
+    runs-on: ubuntu-latest
+
+    strategy:
+      matrix:
+        goos: [windows, linux]
+        goarch: [amd64, arm64]
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.23' # or your Go version
+
+      - name: Build ${{ matrix.goos }}-${{ matrix.goarch }}
+        run: |
+          mkdir -p dist
+          EXT=""
+          if [ "${{ matrix.goos }}" = "windows" ]; then EXT=".exe"; fi
+
+          BIN_NAME="min-${{ matrix.goos }}-${{ matrix.goarch }}$EXT"
+          OUTPUT="dist/$BIN_NAME"
+
+          echo "Building $OUTPUT"
+          GOOS=${{ matrix.goos }} GOARCH=${{ matrix.goarch }} go build -ldflags="-w -s" -o "$OUTPUT" .
+
+          # Zip each binary for convenience
+          cd dist
+          zip "${BIN_NAME%.exe}.zip" "$BIN_NAME"
+          cd ..
+
+      - name: Upload binaries as artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: min-binaries
+          path: dist/*
+
+  release:
+    name: Create GitHub Release
+    runs-on: ubuntu-latest
+    needs: build
+
+    steps:
+      - name: Download build artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: min-binaries
+          path: dist
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          name: "Minimum ${{ github.ref_name }}"
+          tag_name: ${{ github.ref_name }}
+          files: dist/*
+          body: |
+            **Minimum** version ${{ github.ref_name }}
+
+            Includes builds for:
+            - Windows amd64 & arm64
+            - Linux amd64 & arm64
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
