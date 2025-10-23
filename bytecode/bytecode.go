@@ -1260,7 +1260,7 @@ type Function struct {
 }
 
 func GenerateFuns() []Function {
-	strs := []string{"print", "len", "read", "write", "quit", "type", "convert", "list", "array", "pair", "append", "system", "id", "ternary", "rand", "input", "glob", "env", "range", "fmt", "chdir", "split", "join", "cp", "mv", "rm", "pop", "itc", "cti", "has", "index", "replace", "re_match", "re_find", "rget", "rpost", "arrm", "value"}
+	strs := []string{"print", "len", "read", "write", "quit", "type", "convert", "list", "array", "pair", "append", "system", "source", "id", "ternary", "rand", "input", "glob", "env", "range", "fmt", "chdir", "split", "join", "to_upper", "to_lower", "cp", "mv", "rm", "pop", "itc", "cti", "has", "index", "replace", "re_match", "re_find", "rget", "rpost", "arrm", "value"}
 	fs := []Function{}
 	for _, str := range strs {
 		fs = append(fs, Function{Name: str})

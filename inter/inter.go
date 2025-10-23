@@ -1,10 +1,13 @@
 package inter
 
 import (
+	"bytes"
 	"fmt"
+	"io"
 	"math"
 	"math/big"
 	"minimum/bytecode"
+	"net/http"
 	"os"
 	"os/exec"
 	"regexp"
@@ -872,6 +875,12 @@ func (in *Interpreter) NewSpan(length int, dtype byte) bytecode.Span {
 			for range length {
 				in.V.Ints = append(in.V.Ints, big.NewInt(0))
 			}
+		case BYTE:
+			s.Start = uint64(len(in.V.Bytes))
+			s.Length = uint64(length)
+			for range length {
+				in.V.Bytes = append(in.V.Bytes, byte(0))
+			}
 		default:
 			panic("unsupported Span content")
 		}
@@ -1103,7 +1112,7 @@ func (in *Interpreter) Fmt(str string) string {
 }
 
 var RL *readline.Instance
-var protected_actions = []string{"for", "const", "pool"}
+var protected_actions = []string{"for", "const", "pool", "error", "func"}
 
 // MAIN FUNCTION START
 func (in *Interpreter) Run(node_name string) bool {
@@ -1872,13 +1881,21 @@ func (in *Interpreter) Run(node_name string) bool {
 			}
 		case "while_start":
 		case "switch":
-			in.Save("_case"+action.Target, in.GetAny(string(action.Variables[0])))
+			if len(action.Variables) > 0 {
+				in.Save("_case"+action.Target, in.GetAny(string(action.Variables[0])))
+			} else {
+				in.Save("_case"+action.Target, true)
+			}
 			err := in.Run(action.Target)
 			if err {
 				return true
 			}
 			in.RemoveName("_case" + action.Target)
 		case "case":
+			if len(action.Variables) == 0 {
+				err := in.Run(action.Target)
+				return err
+			}
 			o, t := in.EqualizeTypes(string(actions[focus].Variables[0]), "_case"+node_name)
 			switch in.V.Slots[in.V.Names[o]].Type {
 			case INT:
@@ -1900,6 +1917,11 @@ func (in *Interpreter) Run(node_name string) bool {
 				}
 			case STR:
 				if in.NamedStr(o) == in.NamedStr(t) {
+					err := in.Run(action.Target)
+					return err
+				}
+			case BOOL:
+				if in.NamedBool(o) == in.NamedBool(t) {
 					err := in.Run(action.Target)
 					return err
 				}
@@ -2001,6 +2023,31 @@ func (in *Interpreter) Run(node_name string) bool {
 			for _, span_name := range sources {
 				in.RemoveName(span_name)
 			}
+		case "error":
+			e := in.CheckArgN(action, 0, 2)
+			if e {
+				return e
+			}
+			in.IgnoreErr = true
+			err := in.Run(action.Target)
+			switch len(action.Variables) {
+			case 1:
+				in.Save(string(action.Variables[0]), err)
+			case 2:
+				in.Save(string(action.Variables[0]), err)
+				// fmt.Printf("Runtime error: %s\nLocation: line %d\nAction: %s\nType: %s\nLine:\n%s\n", message, act.Source.N+1, act.Type, etype, strings.ReplaceAll(act.Source.Source, "\r\n", "\n"))
+				p := bytecode.Pair{}
+				p.Ids = make(map[string]uint64)
+				PairAppend(&p, in, big.NewInt(int64(in.ErrSource.N)+1), "line")
+				PairAppend(&p, in, in.ErrSource.Source, "source")
+				PairAppend(&p, in, action.Type, "action")
+				PairAppend(&p, in, error_type, "type")
+				PairAppend(&p, in, error_message, "message")
+				error_type = ""
+				error_message = ""
+				in.Save(string(action.Variables[1]), p)
+			}
+			in.IgnoreErr = false
 		case "$":
 			text_command := strings.TrimSpace(strings.SplitN(action.Source.Source, "$", 2)[1])
 			arguments := in.Parse(text_command)
@@ -2064,6 +2111,36 @@ func (in *Interpreter) Run(node_name string) bool {
 					}
 				}
 				fmt.Println()
+			case "source":
+				err := in.CheckArgN(action, 1, 1)
+				if err {
+					return true
+				}
+				err = in.CheckDtype(action, 0, STR)
+				if err {
+					return true
+				}
+				b, ferr := os.ReadFile(in.NamedStr(string(action.Variables[0])))
+				if ferr != nil {
+					in.Error(action, ferr.Error(), "sys")
+					return true
+				}
+				in.Compile(string(b), in.NamedStr(string(action.Variables[0])))
+				last_node := fmt.Sprintf("_node_%d", bytecode.NodeN-1)
+				err = in.Run(last_node)
+				if err {
+					return err
+				}
+			case "ternary":
+				err := in.CheckArgN(action, 3, 3)
+				if err {
+					return true
+				}
+				err = in.CheckDtype(action, 0, BOOL)
+				if err {
+					return true
+				}
+				in.Save(action.Target, ternary(in.NamedBool(string(action.Variables[0])), in.GetAny(string(action.Variables[1])), in.GetAny(string(action.Variables[2]))))
 			case "fmt":
 				err := in.CheckArgN(action, 1, 1)
 				if err {
@@ -2117,6 +2194,12 @@ func (in *Interpreter) Run(node_name string) bool {
 							in.Save(action.Target, fmt.Sprintf("b.%d", in.NamedByte(string(action.Variables[0]))))
 						case BOOL:
 							in.Save(action.Target, fmt.Sprintf("%v", in.NamedBool(string(action.Variables[0]))))
+						case SPAN:
+							s := in.NamedSpan(string(action.Variables[0]))
+							switch s.Dtype {
+							case BYTE:
+								in.Save(action.Target, string(in.V.Bytes[s.Start:s.Start+s.Length]))
+							}
 						}
 					case INT:
 						switch in.V.Slots[in.V.Names[string(action.Variables[0])]].Type {
@@ -2159,6 +2242,16 @@ func (in *Interpreter) Run(node_name string) bool {
 							}
 							in.Save(action.Target, l)
 						}
+					case SPAN:
+						switch in.V.Slots[in.V.Names[string(action.Variables[0])]].Type {
+						case STR:
+							str := in.NamedStr(string(action.Variables[0]))
+							s := in.NewSpan(len(str), BYTE)
+							for n := 0; n < len(str); n++ {
+								in.V.Bytes[s.Start+uint64(n)] = str[n]
+							}
+							in.Save(action.Target, s)
+						}
 					}
 				}
 			case "value":
@@ -2173,6 +2266,51 @@ func (in *Interpreter) Run(node_name string) bool {
 					return true
 				}
 				in.Save(action.Target, in.GetAnyRef(id))
+			case "read":
+				err := in.CheckArgN(actions[focus], 1, 1)
+				if err {
+					return true
+				}
+				err = in.CheckDtype(actions[focus], 0, STR)
+				if err {
+					return true
+				}
+				b, berr := os.ReadFile(in.V.Strs[in.V.Names[string(action.Variables[0])]])
+				if berr != nil {
+					in.Error(action, berr.Error(), "file")
+				}
+				a := bytecode.Array{}
+				a.Bytes = append(a.Bytes, b...)
+				a.Dtype = BYTE
+				in.Save(action.Target, a)
+			case "write":
+				// TODO: restore functionality
+				/*
+					if is_safe {
+						in.Error(action, "cannot write to files when in safe mode!", "permission")
+						return true
+					}
+				*/
+				err := in.CheckArgN(actions[focus], 2, 2)
+				if err {
+					return true
+				}
+				err = in.CheckDtype(actions[focus], 0, STR)
+				if err {
+					return true
+				}
+				err = in.CheckDtype(actions[focus], 1, SPAN)
+				if err {
+					return true
+				}
+				s := in.NamedSpan(string(action.Variables[1]))
+				if s.Dtype == BYTE {
+					oserr := os.WriteFile(in.NamedStr(string(action.Variables[0])), in.V.Bytes[s.Start:s.Start+s.Length], 0644)
+					if oserr != nil {
+						in.Error(action, oserr.Error(), "sys")
+						return true
+					}
+				}
 			case "len":
 				switch in.V.Slots[in.V.Names[string(action.Variables[0])]].Type {
 				case STR:
@@ -2227,7 +2365,7 @@ func (in *Interpreter) Run(node_name string) bool {
 				case "os":
 					in.Save(actions[focus].Target, runtime.GOOS)
 				case "version":
-					in.Save(actions[focus].Target, "4.2.5")
+					in.Save(actions[focus].Target, "4.2.6")
 				case "args":
 					l := bytecode.List{}
 					for _, arg := range os.Args {
@@ -2241,6 +2379,115 @@ func (in *Interpreter) Run(node_name string) bool {
 					}
 					in.Save(actions[focus].Target, wd)
 				}
+			case "rget":
+				err := in.CheckArgN(action, 1, 1)
+				if err {
+					return true
+				}
+				if in.CheckDtype(action, 0, STR) {
+					return true
+				}
+				url := in.NamedStr(string(action.Variables[0]))
+				resp, err2 := http.Get(url)
+				if err2 != nil {
+					in.Error(actions[focus], err2.Error(), "sys")
+					return true
+				}
+
+				body, err3 := io.ReadAll(resp.Body)
+				if err3 != nil {
+					in.Error(actions[focus], err3.Error(), "sys")
+					return true
+				}
+				pnew := bytecode.Pair{}
+				pnew.Ids = make(map[string]uint64)
+				PairAppend(&pnew, in, big.NewInt(int64(resp.StatusCode)), "code")
+				PairAppend(&pnew, in, string(body), "body")
+				in.Save(actions[focus].Target, pnew)
+				resp.Body.Close()
+			case "rpost":
+				err := in.CheckArgN(actions[focus], 2, 2)
+				if err {
+					return true
+				}
+				if !in.CheckDtype(actions[focus], 0, STR) || !in.CheckDtype(actions[focus], 1, PAIR) {
+					return true
+				}
+				url := in.V.Strs[in.V.Names[string(actions[focus].Variables[0])]]
+				pair := in.V.Pairs[in.V.Names[string(actions[focus].Variables[1])]]
+				jsonStr := PairString(&pair, in)
+				resp, err2 := http.Post(url, "application/json", bytes.NewBuffer([]byte(jsonStr)))
+				if err2 != nil {
+					in.Error(actions[focus], err2.Error(), "sys")
+					return true
+				}
+
+				body, err3 := io.ReadAll(resp.Body)
+				if err3 != nil {
+					in.Error(actions[focus], err3.Error(), "sys")
+					return true
+				}
+				pnew := bytecode.Pair{}
+				pnew.Ids = make(map[string]uint64)
+				PairAppend(&pnew, in, big.NewInt(int64(resp.StatusCode)), "code")
+				PairAppend(&pnew, in, string(body), "body")
+				in.Save(actions[focus].Target, pnew)
+				resp.Body.Close()
+			case "split":
+				if err := in.CheckArgN(action, 2, 2); err {
+					return err
+				}
+				if err := in.CheckDtype(action, 0, STR); err {
+					return err
+				}
+				if err := in.CheckDtype(action, 1, STR); err {
+					return err
+				}
+				arr := strings.Split(in.NamedStr(string(action.Variables[0])), in.NamedStr(string(action.Variables[1])))
+				l := bytecode.List{}
+				for _, element := range arr {
+					ListAppend(&l, in, element)
+				}
+				in.Save(action.Target, l)
+			case "join":
+				// join list with separator -> !join ["hello", "world"], " "
+				if err := in.CheckArgN(action, 2, 2); err {
+					return err
+				}
+				if err := in.CheckDtype(action, 0, LIST); err {
+					return err
+				}
+				if err := in.CheckDtype(action, 1, STR); err {
+					return err
+				}
+				var to_join []string
+				for _, ref := range in.NamedList(string(action.Variables[0])).Ids {
+					v := in.GetAnyRef(ref)
+					switch vtyped := v.(type) {
+					case string:
+						to_join = append(to_join, vtyped)
+					default:
+						in.Error(action, "cannot join list with non-str items within", "type")
+						return true
+					}
+				}
+				in.Save(action.Target, strings.Join(to_join, in.NamedStr(string(action.Variables[1]))))
+			case "to_upper":
+				if err := in.CheckArgN(action, 1, 1); err {
+					return err
+				}
+				if err := in.CheckDtype(action, 0, STR); err {
+					return err
+				}
+				in.Save(action.Target, strings.ToUpper(in.NamedStr(string(action.Variables[0]))))
+			case "to_lower":
+				if err := in.CheckArgN(action, 1, 1); err {
+					return err
+				}
+				if err := in.CheckDtype(action, 0, STR); err {
+					return err
+				}
+				in.Save(action.Target, strings.ToLower(in.NamedStr(string(action.Variables[0]))))
 			case "id":
 				err := in.CheckArgN(action, 1, 1)
 				if err {
@@ -2252,7 +2499,7 @@ func (in *Interpreter) Run(node_name string) bool {
 				if err {
 					return err
 				}
-				err = in.CheckDtype(action, 0, LIST)
+				err = in.CheckDtype(action, 0, LIST, SPAN)
 				if err {
 					return err
 				}
@@ -2261,6 +2508,41 @@ func (in *Interpreter) Run(node_name string) bool {
 					l := in.NamedList(string(action.Variables[0]))
 					ListAppend(&l, in, in.GetAny(string(action.Variables[1])))
 					in.Save(action.Target, l)
+				case SPAN:
+					s := in.NamedSpan(string(action.Variables[0]))
+					switch s.Dtype {
+					case INT:
+						err := in.CheckDtype(action, 1, INT)
+						if err {
+							return err
+						}
+						new_span := in.NewSpan(int(s.Length)+1, INT) // bytecode.Span{INT, uint64(new_start), new_length}
+						for n := s.Start; n < s.Start+s.Length; n++ {
+							relative_n := n - s.Start
+							in.V.Ints[new_span.Start+relative_n].Set(in.V.Ints[n])
+						}
+						in.V.Ints[new_span.Start+new_span.Length-1].Set(in.NamedInt(string(action.Variables[1])))
+						in.Save(action.Target, new_span)
+						in.V.gcCycle = in.V.gcMax - 1 // make sure the GC actually works
+						// in.GC()                       // this one is here to prevent memory overfill
+					}
+				}
+			case "has":
+				err := in.CheckArgN(action, 2, 2)
+				if err {
+					return err
+				}
+				err = in.CheckDtype(action, 0, STR)
+				if err {
+					return err
+				}
+				switch in.V.Slots[in.V.Names[string(action.Variables[0])]].Type {
+				case STR:
+					err = in.CheckDtype(action, 1, STR)
+					if err {
+						return err
+					}
+					in.Save(action.Target, strings.Contains(in.NamedStr(string(action.Variables[0])), in.NamedStr(string(action.Variables[1]))))
 				}
 			case "type":
 				err := in.CheckArgN(action, 1, 1)
@@ -2443,13 +2725,6 @@ func (in *Interpreter) Copy(og *Interpreter) {
 	in.IgnoreErr = og.IgnoreErr
 	in.Code = og.Code
 	in.File = og.File
-	// TODO: verify if needed
-	for _, fn := range bytecode.GenerateFuns() {
-		if _, ok := in.V.Names[fn.Name]; ok {
-			continue
-		}
-		in.Save(fn.Name, &fn)
-	}
 	for key := range og.V.Names {
 		in.Save(key, og.GetAny(key))
 	}
