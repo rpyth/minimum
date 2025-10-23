@@ -59,7 +59,7 @@ jobs:
       - name: Download all artifacts
         uses: actions/download-artifact@v4
         with:
-          pattern: min-binaries-*
+          pattern: min-binaries-*.zip
           path: dist
           merge-multiple: true
 
