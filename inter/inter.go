@@ -674,7 +674,7 @@ func (in *Interpreter) GetSlot(name string) Entry {
 }
 
 func (in *Interpreter) CheckDtype(action bytecode.Action, index int, dtypes ...byte) bool {
-	dstrings := map[byte]string{0: "noth", 1: "int", 2: "float", 3: "str", 4: "arr", 5: "list", 6: "pair", 7: "bool", 8: "byte", 9: "func", 10: "id"}
+	dstrings := map[byte]string{0: "noth", 1: "int", 2: "float", 3: "str", 4: "arr", 5: "list", 6: "pair", 7: "bool", 8: "byte", 9: "func", 10: "id", SPAN: "span"}
 	found := false
 	for _, dtype := range dtypes {
 		// in.V.Slots[in.V.Names[string(action.Variables[index])]].Type
@@ -2312,6 +2312,14 @@ func (in *Interpreter) Run(node_name string) bool {
 					}
 				}
 			case "len":
+				err := in.CheckArgN(action, 1, 1)
+				if err {
+					return true
+				}
+				err = in.CheckDtype(action, 0, STR, LIST, SPAN)
+				if err {
+					return true
+				}
 				switch in.V.Slots[in.V.Names[string(action.Variables[0])]].Type {
 				case STR:
 					in.Save(action.Target, big.NewInt(int64(len([]rune(in.NamedStr(string(action.Variables[0])))))))
