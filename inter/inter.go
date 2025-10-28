@@ -280,35 +280,35 @@ func (in *Interpreter) SaveRefNew(v any) uint64 {
 }
 
 func (in *Interpreter) GetAny(var_name string) any {
-	ind := in.V.Slots[in.V.Names[var_name]].Index
 	switch in.V.Slots[in.V.Names[var_name]].Type {
 	case INT:
-		return in.V.Ints[ind]
+		return in.NamedInt(var_name)
 	case FLOAT:
-		return in.V.Floats[ind]
+		return in.NamedFloat(var_name)
 	case STR:
-		return in.V.Strs[ind]
+		return in.NamedStr(var_name)
 	case LIST:
-		return in.V.Lists[ind]
+		return in.NamedList(var_name)
 	case BOOL:
-		return in.V.Bools[ind]
+		return in.NamedBool(var_name)
 	case BYTE:
-		return in.V.Bytes[ind]
+		return in.NamedByte(var_name)
 	case ARR:
-		return in.V.Arrs[ind]
+		return in.NamedArr(var_name)
 	case FUNC:
-		return in.V.Funcs[ind]
+		return in.NamedFunc(var_name)
 	case SPAN:
-		return in.V.Spans[ind]
+		return in.NamedSpan(var_name)
 	case ID:
-		return in.V.Ids[ind]
+		return in.NamedId(var_name)
 	case PAIR:
-		return in.V.Pairs[ind]
+		return in.NamedPair(var_name)
 	}
 	return nil
 }
 
 func (in *Interpreter) GetAnyRef(ref uint64) any {
+	// as of now there is no such thing as a global reference
 	ind := in.V.Slots[ref].Index
 	switch in.V.Slots[ref].Type {
 	case INT:
@@ -807,38 +807,129 @@ func PairString(p *bytecode.Pair, in *Interpreter) string {
 }
 
 // GETTING VARIABLES START
+// return in.V.Ints[in.V.Slots[in.V.Names[vname]].Index]
 func (in *Interpreter) NamedInt(vname string) *big.Int {
-	return in.V.Ints[in.V.Slots[in.V.Names[vname]].Index]
+	if slot_index, ok := in.V.Names[vname]; ok {
+		return in.V.Ints[in.V.Slots[slot_index].Index]
+	} else {
+		if in.Parent != nil {
+			return in.Parent.NamedInt(vname)
+		} else {
+			return big.NewInt(0)
+		}
+	}
 }
 func (in *Interpreter) NamedFloat(vname string) *big.Float {
-	return in.V.Floats[in.V.Slots[in.V.Names[vname]].Index]
+	if slot_index, ok := in.V.Names[vname]; ok {
+		return in.V.Floats[in.V.Slots[slot_index].Index]
+	} else {
+		if in.Parent != nil {
+			return in.Parent.NamedFloat(vname)
+		} else {
+			return big.NewFloat(0)
+		}
+	}
 }
 func (in *Interpreter) NamedStr(vname string) string {
-	return in.V.Strs[in.V.Slots[in.V.Names[vname]].Index]
+	if slot_index, ok := in.V.Names[vname]; ok {
+		return in.V.Strs[in.V.Slots[slot_index].Index]
+	} else {
+		if in.Parent != nil {
+			return in.Parent.NamedStr(vname)
+		} else {
+			return ""
+		}
+	}
 }
 func (in *Interpreter) NamedBool(vname string) bool {
-	return in.V.Bools[in.V.Slots[in.V.Names[vname]].Index]
+	if slot_index, ok := in.V.Names[vname]; ok {
+		return in.V.Bools[in.V.Slots[slot_index].Index]
+	} else {
+		if in.Parent != nil {
+			return in.Parent.NamedBool(vname)
+		} else {
+			return false
+		}
+	}
 }
 func (in *Interpreter) NamedByte(vname string) byte {
-	return in.V.Bytes[in.V.Slots[in.V.Names[vname]].Index]
+	if slot_index, ok := in.V.Names[vname]; ok {
+		return in.V.Bytes[in.V.Slots[slot_index].Index]
+	} else {
+		if in.Parent != nil {
+			return in.Parent.NamedByte(vname)
+		} else {
+			return 0
+		}
+	}
 }
 func (in *Interpreter) NamedFunc(vname string) *bytecode.Function {
-	return in.V.Funcs[in.V.Slots[in.V.Names[vname]].Index]
+	if slot_index, ok := in.V.Names[vname]; ok {
+		return in.V.Funcs[in.V.Slots[slot_index].Index]
+	} else {
+		if in.Parent != nil {
+			return in.Parent.NamedFunc(vname)
+		} else {
+			return &bytecode.Function{}
+		}
+	}
 }
 func (in *Interpreter) NamedList(vname string) bytecode.List {
-	return in.V.Lists[in.V.Slots[in.V.Names[vname]].Index]
+	if slot_index, ok := in.V.Names[vname]; ok {
+		return in.V.Lists[in.V.Slots[slot_index].Index]
+	} else {
+		if in.Parent != nil {
+			return in.Parent.NamedList(vname)
+		} else {
+			return bytecode.List{}
+		}
+	}
 }
 func (in *Interpreter) NamedArr(vname string) bytecode.Array {
-	return in.V.Arrs[in.V.Slots[in.V.Names[vname]].Index]
+	if slot_index, ok := in.V.Names[vname]; ok {
+		return in.V.Arrs[in.V.Slots[slot_index].Index]
+	} else {
+		if in.Parent != nil {
+			return in.Parent.NamedArr(vname)
+		} else {
+			return bytecode.Array{}
+		}
+	}
 }
 func (in *Interpreter) NamedSpan(vname string) bytecode.Span {
-	return in.V.Spans[in.V.Slots[in.V.Names[vname]].Index]
+	if slot_index, ok := in.V.Names[vname]; ok {
+		return in.V.Spans[in.V.Slots[slot_index].Index]
+	} else {
+		if in.Parent != nil {
+			return in.Parent.NamedSpan(vname)
+		} else {
+			return in.NewSpan(0, BYTE)
+		}
+	}
 }
 func (in *Interpreter) NamedPair(vname string) bytecode.Pair {
-	return in.V.Pairs[in.V.Slots[in.V.Names[vname]].Index]
+	if slot_index, ok := in.V.Names[vname]; ok {
+		return in.V.Pairs[in.V.Slots[slot_index].Index]
+	} else {
+		if in.Parent != nil {
+			return in.Parent.NamedPair(vname)
+		} else {
+			p := bytecode.Pair{}
+			p.Ids = make(map[string]uint64)
+			return p
+		}
+	}
 }
 func (in *Interpreter) NamedId(vname string) uint64 {
-	return in.V.Ids[in.V.Slots[in.V.Names[vname]].Index]
+	if slot_index, ok := in.V.Names[vname]; ok {
+		return in.V.Ids[in.V.Slots[slot_index].Index]
+	} else {
+		if in.Parent != nil {
+			return in.Parent.NamedId(vname)
+		} else {
+			return 0 // TODO: change to error value
+		}
+	}
 }
 
 // GETTING VARIABLES END
@@ -2074,7 +2165,7 @@ func (in *Interpreter) Run(node_name string) bool {
 		case "GC":
 			in.GC()
 		default:
-			fn := in.GetAny(action.Type).(*bytecode.Function) //in.V.Funcs[in.V.Names[actions[focus].Type]]
+			fn := in.NamedFunc(action.Type) //in.GetAny(action.Type).(*bytecode.Function) //in.V.Funcs[in.V.Names[actions[focus].Type]]
 			// TODO: add boundcheck
 			/*
 				if !ok {
@@ -2373,7 +2464,7 @@ func (in *Interpreter) Run(node_name string) bool {
 				case "os":
 					in.Save(actions[focus].Target, runtime.GOOS)
 				case "version":
-					in.Save(actions[focus].Target, "4.2.6")
+					in.Save(actions[focus].Target, "4.2.7")
 				case "args":
 					l := bytecode.List{}
 					for _, arg := range os.Args {
@@ -2733,9 +2824,12 @@ func (in *Interpreter) Copy(og *Interpreter) {
 	in.IgnoreErr = og.IgnoreErr
 	in.Code = og.Code
 	in.File = og.File
-	for key := range og.V.Names {
-		in.Save(key, og.GetAny(key))
-	}
+	in.Parent = og
+	/*
+		for key := range og.V.Names {
+			in.Save(key, og.GetAny(key))
+		}
+	*/
 }
 
 func (in *Interpreter) Copy2(og *Interpreter) {
