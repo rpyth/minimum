@@ -1874,32 +1874,10 @@ func (in *Interpreter) Run(node_name string) bool {
 			}
 		case "==":
 			o, t := in.EqualizeTypes(string(actions[focus].Variables[0]), string(actions[focus].Variables[1]))
-			switch in.V.Slots[in.V.Names[o]].Type {
-			case INT:
-				r := in.NamedInt(o).Cmp(in.NamedInt(t))
-				in.Save(actions[focus].Target, r == 0)
-			case FLOAT:
-				r := in.NamedFloat(o).Cmp(in.NamedFloat(t))
-				in.Save(actions[focus].Target, r == 0)
-			case BYTE:
-				in.Save(action.Target, in.NamedByte(o) == in.NamedByte(t))
-			case STR:
-				in.Save(action.Target, in.NamedStr(o) == in.NamedStr(t))
-			}
+			in.Save(action.Target, in.CompareName(o, t))
 		case "!=":
 			o, t := in.EqualizeTypes(string(actions[focus].Variables[0]), string(actions[focus].Variables[1]))
-			switch in.V.Slots[in.V.Names[o]].Type {
-			case INT:
-				r := in.NamedInt(o).Cmp(in.NamedInt(t))
-				in.Save(actions[focus].Target, r != 0)
-			case FLOAT:
-				r := in.NamedFloat(o).Cmp(in.NamedFloat(t))
-				in.Save(actions[focus].Target, r != 0)
-			case BYTE:
-				in.Save(action.Target, in.NamedByte(o) != in.NamedByte(t))
-			case STR:
-				in.Save(action.Target, in.NamedStr(o) != in.NamedStr(t))
-			}
+			in.Save(action.Target, !in.CompareName(o, t))
 		case "<":
 			o, t := in.EqualizeTypes(string(actions[focus].Variables[0]), string(actions[focus].Variables[1]))
 			switch in.V.Slots[in.V.Names[o]].Type {
@@ -2631,7 +2609,7 @@ func (in *Interpreter) Run(node_name string) bool {
 				if err {
 					return err
 				}
-				err = in.CheckDtype(action, 0, STR)
+				err = in.CheckDtype(action, 0, STR, LIST, SPAN)
 				if err {
 					return err
 				}
@@ -2642,6 +2620,34 @@ func (in *Interpreter) Run(node_name string) bool {
 						return err
 					}
 					in.Save(action.Target, strings.Contains(in.NamedStr(string(action.Variables[0])), in.NamedStr(string(action.Variables[1]))))
+				case LIST:
+					in.Save(action.Target, false)
+					l := in.NamedList(string(action.Variables[0]))
+					for n := range len(l.Ids) {
+						in.Save("_cmp_0", in.GetAnyRef(l.Ids[n]))
+						in.Save("_cmp_1", in.GetAny(string(action.Variables[1])))
+						o, t := in.EqualizeTypes("_cmp_0", "_cmp_1")
+						if equals := in.CompareName(o, t); equals {
+							in.Save(action.Target, true)
+							break
+						}
+					}
+				case SPAN:
+					in.Save(action.Target, false)
+					s := in.NamedSpan(string(action.Variables[0]))
+					for n := range s.Length {
+						switch s.Dtype {
+						case INT:
+							// TODO: add more types
+							in.Save("_cmp_0", in.V.Ints[s.Start+n])
+						}
+						in.Save("_cmp_1", in.GetAny(string(action.Variables[1])))
+						o, t := in.EqualizeTypes("_cmp_0", "_cmp_1")
+						if equals := in.CompareName(o, t); equals {
+							in.Save(action.Target, true)
+							break
+						}
+					}
 				}
 			case "type":
 				err := in.CheckArgN(action, 1, 1)
@@ -2820,6 +2826,78 @@ func PoolWorkerNewLegacy(
 // MAIN FUNCTION END
 
 // UTIL FUNCTIONS
+func (in *Interpreter) Nothing(name string) {
+	in.Save(name, byte(0))
+	in.V.Slots[in.V.Names[name]].Type = NOTH
+}
+
+func (in *Interpreter) Type(name string) byte {
+	return in.V.Slots[in.V.Names[name]].Type
+}
+
+func (in *Interpreter) CompareName(n0, n1 string) bool {
+	if n0 == n1 || in.V.Names[n0] == in.V.Names[n1] {
+		return true
+	}
+	if in.Type(n0) != in.Type(n1) {
+		return false
+	}
+	return in.Compare(in.GetAny(n0), in.GetAny(n1))
+}
+
+func (in *Interpreter) Compare(v0, v1 any) bool {
+	// TODO: add pair comparison
+	switch v0t := v0.(type) {
+	case *big.Int:
+		v1t := v1.(*big.Int)
+		return v0t.Cmp(v1t) == 0
+	case *big.Float:
+		v1t := v1.(*big.Float)
+		return v0t.Cmp(v1t) == 0
+	case string:
+		return v0t == v1.(string)
+	case bool:
+		return v0t == v1.(bool)
+	case byte:
+		return v0t == v1.(byte)
+	case uint64:
+		return v0t == v1.(uint64)
+	case bytecode.List:
+		v1t := v1.(bytecode.List)
+		if len(v0t.Ids) != len(v1t.Ids) {
+			return false
+		}
+		for n := range v0t.Ids {
+			if in.V.Slots[v0t.Ids[n]].Type != in.V.Slots[v1t.Ids[n]].Type {
+				return false
+			}
+			if !in.Compare(in.GetAnyRef(v0t.Ids[n]), in.GetAnyRef(v1t.Ids[n])) {
+				return false
+			}
+			return true
+		}
+	case bytecode.Span:
+		v1t := v1.(bytecode.Span)
+		if v0t.Length != v1t.Length || v0t.Dtype != v1t.Dtype {
+			return false
+		}
+		if v0t.Start == v1t.Start {
+			return true
+		}
+		//TODO: expand types
+		switch v0t.Dtype {
+		case INT:
+			for n := range v0t.Length {
+				if !in.Compare(in.V.Ints[v0t.Start+n], in.V.Ints[v1t.Start+n]) {
+					return false
+				}
+			}
+			return true
+		}
+	}
+	return false
+}
+
 func (in *Interpreter) Copy(og *Interpreter) {
 	in.IgnoreErr = og.IgnoreErr
 	in.Code = og.Code

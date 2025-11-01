@@ -1,6 +1,6 @@
 
 # Minimum Programming Language
-**Minimum** is a simple scripting language written in Go. It features dynaming typing, garbage collection and 12 built-in data types. The project is aiming to provide a language similar to Python, with the benefits of easy parallel processing and cross-platform usage that come with Go.
+**Minimum** is a simple scripting language written in Go. It features dynamic typing, garbage collection and 12 built-in data types. The project is aiming to provide a language similar to Python, with the benefits of easy parallel processing and cross-platform usage that come with Go.
 
 ## Documentation
 ### Data Types
