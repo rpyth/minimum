@@ -3203,6 +3203,8 @@ func main() {
 				fmt.Println("func." + in.NamedFunc(last_name).Name)
 			case SPAN:
 				fmt.Println(in.StringSpan(in.NamedSpan(last_name)))
+			case NOTH:
+				fmt.Println("Nothing")
 			}
 		}
 		in.Code[last_node] = append(in.Code[last_node], gc)

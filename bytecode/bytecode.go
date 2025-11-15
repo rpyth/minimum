@@ -54,6 +54,11 @@ func Unlink[T any](series []T) []T {
 	return append(empty, series...)
 }
 
+type MinPtr struct {
+	Addr uint64
+	Id   uint64
+}
+
 type Token struct {
 	Type  string
 	Value string
@@ -354,6 +359,18 @@ type Action struct {
 	Type      string
 	Variables []Variable
 	Source    *SourceLine
+}
+
+func (a *Action) First() string {
+	return string(a.Variables[0])
+}
+
+func (a *Action) Second() string {
+	return string(a.Variables[1])
+}
+
+func (a *Action) Third() string {
+	return string(a.Variables[2])
 }
 
 var TempN int
@@ -1260,7 +1277,7 @@ type Function struct {
 }
 
 func GenerateFuns() []Function {
-	strs := []string{"print", "len", "read", "write", "quit", "type", "convert", "list", "array", "pair", "append", "system", "source", "id", "ternary", "rand", "input", "glob", "env", "range", "fmt", "chdir", "split", "join", "to_upper", "to_lower", "cp", "mv", "rm", "pop", "itc", "cti", "has", "index", "replace", "re_match", "re_find", "rget", "rpost", "arrm", "value"}
+	strs := []string{"print", "out", "where", "len", "read", "write", "quit", "type", "convert", "list", "array", "pair", "append", "system", "source", "sort", "id", "ternary", "rand", "input", "glob", "env", "range", "fmt", "chdir", "split", "join", "to_upper", "to_lower", "cp", "mv", "rm", "pop", "itc", "cti", "has", "index", "replace", "re_match", "re_find", "rget", "rpost", "arrm", "value"}
 	fs := []Function{}
 	for _, str := range strs {
 		fs = append(fs, Function{Name: str})
