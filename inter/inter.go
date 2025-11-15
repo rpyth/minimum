@@ -57,7 +57,7 @@ type Vars struct {
 	Bools   []bool
 	Bytes   []byte
 	Funcs   []*bytecode.Function
-	Ids     []uint64
+	Ids     []*bytecode.MinPtr
 	Arrs    []bytecode.Array
 	Spans   []bytecode.Span
 	Lists   []bytecode.List
@@ -90,7 +90,7 @@ func TypeToByte(a any) byte {
 		return BYTE
 	case bool:
 		return BOOL
-	case uint64:
+	case *bytecode.MinPtr:
 		return ID
 	case bytecode.List:
 		return LIST
@@ -153,7 +153,7 @@ func (in *Interpreter) Save(name string, v any) {
 	case bool:
 		entry.Index = len(in.V.Bools)
 		in.V.Bools = append(in.V.Bools, val)
-	case uint64:
+	case *bytecode.MinPtr:
 		entry.Index = len(in.V.Ids)
 		in.V.Ids = append(in.V.Ids, val)
 	case bytecode.List:
@@ -179,28 +179,28 @@ func (in *Interpreter) Save(name string, v any) {
 	in.V.Slots = append(in.V.Slots, entry)
 }
 
-func (in *Interpreter) SaveRef(old_id uint64, v any) {
-	if TypeToByte(v) == in.V.Slots[old_id].Type {
+func (in *Interpreter) SaveRef(old_id *bytecode.MinPtr, v any) {
+	if TypeToByte(v) == in.V.Slots[old_id.Addr].Type {
 		// value reassignment
-		switch in.V.Slots[old_id].Type {
+		switch in.V.Slots[old_id.Addr].Type {
 		case INT:
-			in.V.Ints[in.V.Slots[old_id].Index] = v.(*big.Int)
+			in.V.Ints[in.V.Slots[old_id.Addr].Index] = v.(*big.Int)
 		case FLOAT:
-			in.V.Floats[in.V.Slots[old_id].Index] = v.(*big.Float)
+			in.V.Floats[in.V.Slots[old_id.Addr].Index] = v.(*big.Float)
 		case STR:
-			in.V.Strs[in.V.Slots[old_id].Index] = v.(string)
+			in.V.Strs[in.V.Slots[old_id.Addr].Index] = v.(string)
 		case BYTE:
-			in.V.Bytes[in.V.Slots[old_id].Index] = v.(byte)
+			in.V.Bytes[in.V.Slots[old_id.Addr].Index] = v.(byte)
 		case BOOL:
-			in.V.Bools[in.V.Slots[old_id].Index] = v.(bool)
+			in.V.Bools[in.V.Slots[old_id.Addr].Index] = v.(bool)
 		case LIST:
-			in.V.Lists[in.V.Slots[old_id].Index] = v.(bytecode.List)
+			in.V.Lists[in.V.Slots[old_id.Addr].Index] = v.(bytecode.List)
 		case ARR:
-			in.V.Arrs[in.V.Slots[old_id].Index] = v.(bytecode.Array)
+			in.V.Arrs[in.V.Slots[old_id.Addr].Index] = v.(bytecode.Array)
 		case SPAN:
-			in.V.Spans[in.V.Slots[old_id].Index] = v.(bytecode.Span)
+			in.V.Spans[in.V.Slots[old_id.Addr].Index] = v.(bytecode.Span)
 		case FUNC:
-			in.V.Funcs[in.V.Slots[old_id].Index] = v.(*bytecode.Function)
+			in.V.Funcs[in.V.Slots[old_id.Addr].Index] = v.(*bytecode.Function)
 		case NOTH:
 			// TODO
 		}
@@ -223,7 +223,7 @@ func (in *Interpreter) SaveRef(old_id uint64, v any) {
 	case bool:
 		entry.Index = len(in.V.Bools)
 		in.V.Bools = append(in.V.Bools, val)
-	case uint64:
+	case *bytecode.MinPtr:
 		entry.Index = len(in.V.Ids)
 		in.V.Ids = append(in.V.Ids, val)
 	case bytecode.List:
@@ -248,9 +248,9 @@ func (in *Interpreter) SaveRef(old_id uint64, v any) {
 	in.V.Slots = append(in.V.Slots, entry)
 }
 
-func (in *Interpreter) SaveRefNew(v any) uint64 {
+func (in *Interpreter) SaveRefNew(v any) *bytecode.MinPtr {
 	entry := Entry{TypeToByte(v), 0}
-	var new_ref uint64
+	new_ref := &bytecode.MinPtr{0, in.Id}
 	switch val := v.(type) {
 	case *big.Int:
 		entry.Index = len(in.V.Ints)
@@ -267,7 +267,7 @@ func (in *Interpreter) SaveRefNew(v any) uint64 {
 	case bool:
 		entry.Index = len(in.V.Bools)
 		in.V.Bools = append(in.V.Bools, val)
-	case uint64:
+	case *bytecode.MinPtr:
 		entry.Index = len(in.V.Ids)
 		in.V.Ids = append(in.V.Ids, val)
 	case bytecode.List:
@@ -286,13 +286,13 @@ func (in *Interpreter) SaveRefNew(v any) uint64 {
 		entry.Index = len(in.V.Spans)
 		in.V.Spans = append(in.V.Spans, val)
 	}
-	new_ref = uint64(len(in.V.Slots))
+	new_ref.Addr = uint64(len(in.V.Slots))
 	in.V.Slots = append(in.V.Slots, entry)
 	return new_ref
 }
 
 func (in *Interpreter) GetAny(var_name string) any {
-	switch in.V.Slots[in.V.Names[var_name]].Type {
+	switch in.Type(var_name) {
 	case INT:
 		return in.NamedInt(var_name)
 	case FLOAT:
@@ -321,10 +321,12 @@ func (in *Interpreter) GetAny(var_name string) any {
 	return nil
 }
 
-func (in *Interpreter) GetAnyRef(ref uint64) any {
-	// as of now there is no such thing as a global reference
-	ind := in.V.Slots[ref].Index
-	switch in.V.Slots[ref].Type {
+func (in *Interpreter) GetAnyRef(ref *bytecode.MinPtr) any {
+	for in.Id != ref.Id { // id test
+		in = in.Parent
+	}
+	ind := in.V.Slots[ref.Addr].Index
+	switch in.V.Slots[ref.Addr].Type {
 	case INT:
 		return in.V.Ints[ind]
 	case FLOAT:
@@ -354,32 +356,33 @@ func PairKey(in *Interpreter, iname any) string {
 	// TODO: update dtype
 	dtype := map[byte]string{0: "noth", 1: "int", 2: "float", 3: "str", 4: "arr", 5: "list", 6: "pair", 7: "bool", 8: "byte", 9: "func", 10: "id"}
 	var iname_str string
-	switch in.V.Slots[key_ref].Type { //TODO: add all types
+	switch in.V.Slots[key_ref.Addr].Type { //TODO: add all types
 	case INT:
-		iname_str = in.V.Ints[in.V.Slots[key_ref].Index].String()
+		iname_str = in.V.Ints[in.V.Slots[key_ref.Addr].Index].String()
 	case FLOAT:
-		iname_str = in.V.Floats[in.V.Slots[key_ref].Index].String()
+		iname_str = in.V.Floats[in.V.Slots[key_ref.Addr].Index].String()
 	case BYTE:
-		iname_str = fmt.Sprintf("b.%d", in.V.Bytes[in.V.Slots[key_ref].Index])
+		iname_str = fmt.Sprintf("b.%d", in.V.Bytes[in.V.Slots[key_ref.Addr].Index])
 	case BOOL:
-		iname_str = ternary(in.V.Bools[in.V.Slots[key_ref].Index], "true", "false")
+		iname_str = ternary(in.V.Bools[in.V.Slots[key_ref.Addr].Index], "true", "false")
 	case FUNC:
-		iname_str = fmt.Sprintf("func.%s", in.V.Funcs[in.V.Slots[key_ref].Index].Name)
+		iname_str = fmt.Sprintf("func.%s", in.V.Funcs[in.V.Slots[key_ref.Addr].Index].Name)
 	case LIST:
-		l := in.V.Lists[in.V.Slots[key_ref].Index]
+		l := in.V.Lists[in.V.Slots[key_ref.Addr].Index]
 		iname_str = ListString(&l, in)
 	case PAIR:
-		p := in.V.Pairs[in.V.Slots[key_ref].Index]
+		p := in.V.Pairs[in.V.Slots[key_ref.Addr].Index]
 		iname_str = PairString(&p, in)
 	case STR:
-		iname_str = in.V.Strs[in.V.Slots[key_ref].Index]
+		iname_str = in.V.Strs[in.V.Slots[key_ref.Addr].Index]
 	}
-	key := fmt.Sprintf("%s:%s", dtype[in.V.Slots[key_ref].Type], iname_str)
+	key := fmt.Sprintf("%s:%s", dtype[in.V.Slots[key_ref.Addr].Type], iname_str)
 	return key
 }
 
 func NewInterpreter(code, file string) Interpreter {
 	in := Interpreter{}
+	in.Id = rand.Uint64()
 	in.Code = bytecode.GetCode(code)
 	in.File = &file
 	in.V = &Vars{}
@@ -459,6 +462,13 @@ func (in *Interpreter) EqualizeTypes(v1, v2 string) (string, string) { // return
 		return v1, "_temp_a"
 	}
 	return v1, v2
+}
+
+func (in *Interpreter) GetAnySlot(ptr *bytecode.MinPtr) Entry {
+	if in.Id != ptr.Id {
+		return in.Parent.GetAnySlot(ptr)
+	}
+	return in.V.Slots[ptr.Addr]
 }
 
 func (in *Interpreter) GC() {
@@ -578,9 +588,10 @@ func (in *Interpreter) GC() {
 			val := old.Lists[e.Index]
 			var newList bytecode.List
 			for _, slot := range val.Ids {
-				oldEntry := old.Slots[slot]
+				oldEntry := in.GetAnySlot(slot) // old.Slots[slot.Addr]
 				newSlot := copyEntry(oldEntry)
-				newList.Ids = append(newList.Ids, uint64(len(newVars.Slots)))
+				newptr := &bytecode.MinPtr{uint64(len(newVars.Slots)), in.Id}
+				newList.Ids = append(newList.Ids, newptr)
 				newVars.Slots = append(newVars.Slots, Entry{Type: oldEntry.Type, Index: newSlot})
 			}
 			newIndex := len(newVars.Lists)
@@ -593,13 +604,13 @@ func (in *Interpreter) GC() {
 			}
 			val := old.Pairs[e.Index]
 			var newPair bytecode.Pair
-			newPair.Ids = make(map[string]uint64)
+			newPair.Ids = make(map[string]*bytecode.MinPtr)
 			for key, slot := range val.Ids {
-				oldEntry := old.Slots[slot]
+				oldEntry := old.Slots[slot.Addr]
 				newSlot := copyEntry(oldEntry)
 				// old version:
 				//newPair.Ids = append(newPair.Ids, uint64(len(newVars.Slots)))
-				newPair.Ids[key] = uint64(len(newVars.Slots))
+				newPair.Ids[key] = &bytecode.MinPtr{uint64(len(newVars.Slots)), in.Id}
 				newVars.Slots = append(newVars.Slots, Entry{Type: oldEntry.Type, Index: newSlot})
 			}
 			newIndex := len(newVars.Pairs)
@@ -628,14 +639,273 @@ func (in *Interpreter) GC() {
 	// exp
 	// Update all entries in newVars.Ids to reflect updated slot mappings
 	for i, oldSlot := range newVars.Ids {
-		if newSlot, ok := slotMap[int(oldSlot)]; ok {
-			newVars.Ids[i] = uint64(newSlot)
+		if newSlot, ok := slotMap[int(oldSlot.Addr)]; ok {
+			newVars.Ids[i] = &bytecode.MinPtr{uint64(newSlot), in.Id}
 		} else {
 			// Clear invalid or collected references
-			newVars.Ids[i] = 0
+			newVars.Ids[i] = nil
 		}
 	}
 
+	newVars.gcCycle = old.gcCycle
+	newVars.gcMax = old.gcMax
+	in.V = newVars
+	runtime.GC()
+}
+
+func (in *Interpreter) GCE() {
+	in.V.gcCycle++
+	if in.V.gcCycle >= in.V.gcMax {
+		in.V.gcCycle = 0
+	} else {
+		return
+	}
+	old := in.V
+	newVars := &Vars{
+		Names: make(map[string]int),
+	}
+
+	// Maps old slot indices to new ones per type
+	intMap := map[int]int{}
+	floatMap := map[int]int{}
+	strMap := map[int]int{}
+	boolMap := map[int]int{}
+	byteMap := map[int]int{}
+	idMap := map[int]int{}
+	funcMap := map[int]int{}
+	arrMap := map[int]int{}
+	spanMap := map[int]int{}
+	listMap := map[int]int{}
+	pairMap := map[int]int{}
+	slotMap := map[int]int{} // maps old slot index -> newVars.Slots index
+
+	var copyEntry func(e Entry) int
+	copyEntry = func(e Entry) int {
+		switch e.Type {
+		case INT:
+			if idx, ok := intMap[e.Index]; ok {
+				return idx
+			}
+			newIndex := len(newVars.Ints)
+			newVars.Ints = append(newVars.Ints, old.Ints[e.Index])
+			intMap[e.Index] = newIndex
+			return newIndex
+		case FLOAT:
+			if idx, ok := floatMap[e.Index]; ok {
+				return idx
+			}
+			newIndex := len(newVars.Floats)
+			newVars.Floats = append(newVars.Floats, old.Floats[e.Index])
+			floatMap[e.Index] = newIndex
+			return newIndex
+		case STR:
+			if idx, ok := strMap[e.Index]; ok {
+				return idx
+			}
+			newIndex := len(newVars.Strs)
+			newVars.Strs = append(newVars.Strs, old.Strs[e.Index])
+			strMap[e.Index] = newIndex
+			return newIndex
+		case BOOL:
+			if idx, ok := boolMap[e.Index]; ok {
+				return idx
+			}
+			newIndex := len(newVars.Bools)
+			newVars.Bools = append(newVars.Bools, old.Bools[e.Index])
+			boolMap[e.Index] = newIndex
+			return newIndex
+		case BYTE:
+			if idx, ok := byteMap[e.Index]; ok {
+				return idx
+			}
+			newIndex := len(newVars.Bytes)
+			newVars.Bytes = append(newVars.Bytes, old.Bytes[e.Index])
+			byteMap[e.Index] = newIndex
+			return newIndex
+		case ID:
+			if idx, ok := idMap[e.Index]; ok {
+				return idx
+			}
+			// copy the pointer struct; we'll remap its Addr later if needed
+			oldPtr := old.Ids[e.Index]
+			newIndex := len(newVars.Ids)
+			// store the same pointer for now (we'll fix local references later)
+			if oldPtr != nil {
+				copied := &bytecode.MinPtr{Addr: oldPtr.Addr, Id: oldPtr.Id}
+				newVars.Ids = append(newVars.Ids, copied)
+			} else {
+				newVars.Ids = append(newVars.Ids, nil)
+			}
+			idMap[e.Index] = newIndex
+			return newIndex
+		case FUNC:
+			if idx, ok := funcMap[e.Index]; ok {
+				return idx
+			}
+			newIndex := len(newVars.Funcs)
+			newVars.Funcs = append(newVars.Funcs, old.Funcs[e.Index])
+			funcMap[e.Index] = newIndex
+			return newIndex
+		case ARR:
+			if idx, ok := arrMap[e.Index]; ok {
+				return idx
+			}
+			val := old.Arrs[e.Index]
+			// Assume Arrays hold only primitive types
+			newIndex := len(newVars.Arrs)
+			newVars.Arrs = append(newVars.Arrs, val)
+			arrMap[e.Index] = newIndex
+			return newIndex
+		case SPAN:
+			if idx, ok := spanMap[e.Index]; ok {
+				return idx
+			}
+			val := old.Spans[e.Index]
+			newSpan := bytecode.Span{Dtype: val.Dtype, Length: val.Length}
+			switch val.Dtype {
+			case INT:
+				newSpan.Start = uint64(len(newVars.Ints))
+				newVars.Ints = append(newVars.Ints, old.Ints[val.Start:val.Start+val.Length]...)
+			case FLOAT:
+				newSpan.Start = uint64(len(newVars.Floats))
+				newVars.Floats = append(newVars.Floats, old.Floats[val.Start:val.Start+val.Length]...)
+			case STR:
+				newSpan.Start = uint64(len(newVars.Strs))
+				newVars.Strs = append(newVars.Strs, old.Strs[val.Start:val.Start+val.Length]...)
+			case BOOL:
+				newSpan.Start = uint64(len(newVars.Bools))
+				newVars.Bools = append(newVars.Bools, old.Bools[val.Start:val.Start+val.Length]...)
+			case BYTE:
+				newSpan.Start = uint64(len(newVars.Bytes))
+				newVars.Bytes = append(newVars.Bytes, old.Bytes[val.Start:val.Start+val.Length]...)
+			case ID:
+				newSpan.Start = uint64(len(newVars.Ids))
+				// copy Id pointers (we'll remap local ones later)
+				for i := uint64(0); i < val.Length; i++ {
+					if old.Ids[val.Start+i] != nil {
+						ptr := &bytecode.MinPtr{Addr: old.Ids[val.Start+i].Addr, Id: old.Ids[val.Start+i].Id}
+						newVars.Ids = append(newVars.Ids, ptr)
+					} else {
+						newVars.Ids = append(newVars.Ids, nil)
+					}
+				}
+			default:
+				// If unknown dtype, just leave span with zero start (safe fallback)
+				newSpan.Start = 0
+			}
+			newIndex := len(newVars.Spans)
+			newVars.Spans = append(newVars.Spans, newSpan)
+			spanMap[e.Index] = newIndex
+			return newIndex
+		case LIST:
+			if idx, ok := listMap[e.Index]; ok {
+				return idx
+			}
+			val := old.Lists[e.Index]
+			var newList bytecode.List
+			for _, ptr := range val.Ids {
+				if ptr == nil {
+					// preserve nil
+					newList.Ids = append(newList.Ids, nil)
+					continue
+				}
+				// if the pointer refers to the same interpreter, copy the referenced slot into newVars
+				if ptr.Id == in.Id {
+					// get the old entry from old.Slots
+					oldEntry := old.Slots[ptr.Addr]
+					newSlotIdx := copyEntry(oldEntry)
+					// new slot index in newVars.Slots is current length
+					newSlotAddr := len(newVars.Slots)
+					// append the slot entry
+					newVars.Slots = append(newVars.Slots, Entry{Type: oldEntry.Type, Index: newSlotIdx})
+					// record mapping from old slot to new slot
+					slotMap[int(ptr.Addr)] = newSlotAddr
+					// create pointer into newVars (local interpreter id)
+					newList.Ids = append(newList.Ids, &bytecode.MinPtr{Addr: uint64(newSlotAddr), Id: in.Id})
+				} else {
+					// external pointer: preserve as-is (copy the struct)
+					newList.Ids = append(newList.Ids, &bytecode.MinPtr{Addr: ptr.Addr, Id: ptr.Id})
+				}
+			}
+			newIndex := len(newVars.Lists)
+			newVars.Lists = append(newVars.Lists, newList)
+			listMap[e.Index] = newIndex
+			return newIndex
+		case PAIR:
+			if idx, ok := pairMap[e.Index]; ok {
+				return idx
+			}
+			val := old.Pairs[e.Index]
+			var newPair bytecode.Pair
+			newPair.Ids = make(map[string]*bytecode.MinPtr)
+			for key, ptr := range val.Ids {
+				if ptr == nil {
+					newPair.Ids[key] = nil
+					continue
+				}
+				if ptr.Id == in.Id {
+					oldEntry := old.Slots[ptr.Addr]
+					newSlotIdx := copyEntry(oldEntry)
+					newSlotAddr := len(newVars.Slots)
+					newVars.Slots = append(newVars.Slots, Entry{Type: oldEntry.Type, Index: newSlotIdx})
+					slotMap[int(ptr.Addr)] = newSlotAddr
+					newPair.Ids[key] = &bytecode.MinPtr{Addr: uint64(newSlotAddr), Id: in.Id}
+				} else {
+					// preserve external pointer
+					newPair.Ids[key] = &bytecode.MinPtr{Addr: ptr.Addr, Id: ptr.Id}
+				}
+			}
+			newIndex := len(newVars.Pairs)
+			newVars.Pairs = append(newVars.Pairs, newPair)
+			pairMap[e.Index] = newIndex
+			return newIndex
+		default:
+			return -1
+		}
+	}
+
+	// Start GC traversal from named variables
+	for name, slotIdx := range old.Names {
+		if strings.HasPrefix(name, "_temp_") {
+			continue
+		}
+		oldEntry := old.Slots[slotIdx]
+		newIndex := copyEntry(oldEntry)
+		newSlotIndex := len(newVars.Slots) // new slot index
+		newVars.Names[name] = newSlotIndex
+		newVars.Slots = append(newVars.Slots, Entry{Type: oldEntry.Type, Index: newIndex})
+		slotMap[slotIdx] = newSlotIndex
+	}
+
+	// Update all entries in newVars.Ids to reflect updated slot mappings for local pointers.
+	// Preserve pointers that point into other interpreters; set to nil when the local target was collected.
+	for i := range newVars.Ids {
+		// Corresponding original pointer was old.Ids[i] (copyEntry copied them in same index order)
+		var oldPtr *bytecode.MinPtr
+		if i < len(old.Ids) {
+			oldPtr = old.Ids[i]
+		} else {
+			oldPtr = nil
+		}
+		if oldPtr == nil {
+			newVars.Ids[i] = nil
+			continue
+		}
+		// If pointer pointed into this interpreter, remap Addr if we copied that slot.
+		if oldPtr.Id == in.Id {
+			if newSlot, ok := slotMap[int(oldPtr.Addr)]; ok {
+				newVars.Ids[i] = &bytecode.MinPtr{Addr: uint64(newSlot), Id: in.Id}
+			} else {
+				// target was collected / not reachable -> clear
+				newVars.Ids[i] = nil
+			}
+		} else {
+			// external pointer: keep original Addr/Id
+			newVars.Ids[i] = &bytecode.MinPtr{Addr: oldPtr.Addr, Id: oldPtr.Id}
+		}
+	}
+
+	// copy GC counters
 	newVars.gcCycle = old.gcCycle
 	newVars.gcMax = old.gcMax
 	in.V = newVars
@@ -646,6 +916,7 @@ func (in *Interpreter) Compile(code, fname string) {
 	in2 := Interpreter{V: &Vars{
 		Names: make(map[string]int),
 	}}
+	in2.Id = rand.Uint64()
 	in2.Code = bytecode.GetCode(code)
 	in2.File = &fname
 	for key := range in2.Code {
@@ -737,7 +1008,7 @@ func (in *Interpreter) CheckDtype(action bytecode.Action, index int, dtypes ...b
 	return false
 }
 
-func (in *Interpreter) GetRef(v any) uint64 {
+func (in *Interpreter) GetRef(v any) *bytecode.MinPtr {
 	entry := Entry{TypeToByte(v), 0}
 	switch val := v.(type) {
 	case *big.Int:
@@ -755,7 +1026,7 @@ func (in *Interpreter) GetRef(v any) uint64 {
 	case bool:
 		entry.Index = len(in.V.Bools)
 		in.V.Bools = append(in.V.Bools, val)
-	case uint64:
+	case *bytecode.MinPtr:
 		entry.Index = len(in.V.Ids)
 		in.V.Ids = append(in.V.Ids, val)
 	case bytecode.List:
@@ -776,7 +1047,7 @@ func (in *Interpreter) GetRef(v any) uint64 {
 	}
 	value := len(in.V.Slots)
 	in.V.Slots = append(in.V.Slots, entry)
-	return uint64(value)
+	return &bytecode.MinPtr{uint64(value), in.Id}
 }
 
 func ListAppend(l *bytecode.List, in *Interpreter, item any) {
@@ -787,8 +1058,11 @@ func ListAppend(l *bytecode.List, in *Interpreter, item any) {
 func ListString(l *bytecode.List, in *Interpreter) string {
 	elements := []string{}
 	for _, item_id := range l.Ids {
-		item := in.V.Slots[item_id].Index
-		switch in.V.Slots[item_id].Type {
+		if item_id.Id != in.Id {
+			return ListString(l, in.Parent)
+		}
+		item := in.V.Slots[item_id.Addr].Index
+		switch in.V.Slots[item_id.Addr].Type {
 		case INT:
 			elements = append(elements, in.V.Ints[item].String())
 		case FLOAT:
@@ -825,24 +1099,24 @@ func PairString(p *bytecode.Pair, in *Interpreter) string {
 		if key[:i] == "str" {
 			dkey = "\"" + dkey + "\""
 		}
-		switch in.V.Slots[item].Type {
+		switch in.V.Slots[item.Addr].Type {
 		case INT:
-			elements = append(elements, dkey+": "+in.V.Ints[in.V.Slots[item].Index].String())
+			elements = append(elements, dkey+": "+in.V.Ints[in.V.Slots[item.Addr].Index].String())
 		case FLOAT:
-			elements = append(elements, dkey+": "+in.V.Floats[in.V.Slots[item].Index].String())
+			elements = append(elements, dkey+": "+in.V.Floats[in.V.Slots[item.Addr].Index].String())
 		case BOOL:
-			elements = append(elements, dkey+": "+ternary(in.V.Bools[in.V.Slots[item].Index], "true", "false"))
+			elements = append(elements, dkey+": "+ternary(in.V.Bools[in.V.Slots[item.Addr].Index], "true", "false"))
 		case BYTE:
-			elements = append(elements, dkey+": "+fmt.Sprintf("b.%d", in.V.Bytes[in.V.Slots[item].Index]))
+			elements = append(elements, dkey+": "+fmt.Sprintf("b.%d", in.V.Bytes[in.V.Slots[item.Addr].Index]))
 		case STR:
-			elements = append(elements, dkey+": \""+in.V.Strs[in.V.Slots[item].Index]+"\"")
+			elements = append(elements, dkey+": \""+in.V.Strs[in.V.Slots[item.Addr].Index]+"\"")
 		case LIST:
-			ll := in.V.Lists[in.V.Slots[item].Index]
+			ll := in.V.Lists[in.V.Slots[item.Addr].Index]
 			elements = append(elements, dkey+": "+ListString(&ll, in))
 		case FUNC:
-			elements = append(elements, dkey+": "+"func."+in.V.Funcs[in.V.Slots[item].Index].Name)
+			elements = append(elements, dkey+": "+"func."+in.V.Funcs[in.V.Slots[item.Addr].Index].Name)
 		case PAIR:
-			pp := in.V.Pairs[in.V.Slots[item].Index]
+			pp := in.V.Pairs[in.V.Slots[item.Addr].Index]
 			elements = append(elements, dkey+": "+PairString(&pp, in))
 		}
 	}
@@ -958,19 +1232,19 @@ func (in *Interpreter) NamedPair(vname string) bytecode.Pair {
 			return in.Parent.NamedPair(vname)
 		} else {
 			p := bytecode.Pair{}
-			p.Ids = make(map[string]uint64)
+			p.Ids = make(map[string]*bytecode.MinPtr)
 			return p
 		}
 	}
 }
-func (in *Interpreter) NamedId(vname string) uint64 {
+func (in *Interpreter) NamedId(vname string) *bytecode.MinPtr {
 	if slot_index, ok := in.V.Names[vname]; ok {
 		return in.V.Ids[in.V.Slots[slot_index].Index]
 	} else {
 		if in.Parent != nil {
 			return in.Parent.NamedId(vname)
 		} else {
-			return 0 // TODO: change to error value
+			return nil
 		}
 	}
 }
@@ -1191,12 +1465,12 @@ func (in *Interpreter) IsSortedList(l bytecode.List) (bool, error) {
 	return true, nil
 }
 
-func (in *Interpreter) CompareLess(id0, id1 uint64) (bool, error) {
-	if bytecode.Has([]byte{INT, FLOAT, BYTE}, in.V.Slots[id0].Type) &&
-		bytecode.Has([]byte{INT, FLOAT, BYTE}, in.V.Slots[id1].Type) {
+func (in *Interpreter) CompareLess(id0, id1 *bytecode.MinPtr) (bool, error) {
+	if bytecode.Has([]byte{INT, FLOAT, BYTE}, in.V.Slots[id0.Addr].Type) &&
+		bytecode.Has([]byte{INT, FLOAT, BYTE}, in.V.Slots[id1.Addr].Type) {
 		// Numeric comparison
 		f0, f1 := big.NewFloat(0), big.NewFloat(0)
-		switch in.V.Slots[id0].Type {
+		switch in.V.Slots[id0.Addr].Type {
 		case INT:
 			f0.SetInt(in.GetAnyRef(id0).(*big.Int))
 		case FLOAT:
@@ -1204,7 +1478,7 @@ func (in *Interpreter) CompareLess(id0, id1 uint64) (bool, error) {
 		case BYTE:
 			f0.SetFloat64(float64(in.GetAnyRef(id0).(byte)))
 		}
-		switch in.V.Slots[id1].Type {
+		switch in.V.Slots[id1.Addr].Type {
 		case INT:
 			f1.SetInt(in.GetAnyRef(id1).(*big.Int))
 		case FLOAT:
@@ -1214,13 +1488,13 @@ func (in *Interpreter) CompareLess(id0, id1 uint64) (bool, error) {
 		}
 		return f0.Cmp(f1) < 0, nil
 
-	} else if in.V.Slots[id0].Type == STR && in.V.Slots[id1].Type == STR {
+	} else if in.V.Slots[id0.Addr].Type == STR && in.V.Slots[id1.Addr].Type == STR {
 		// String comparison
 		s0 := in.GetAnyRef(id0).(string)
 		s1 := in.GetAnyRef(id1).(string)
 		return s0 < s1, nil
 
-	} else if in.V.Slots[id0].Type == LIST && in.V.Slots[id1].Type == LIST {
+	} else if in.V.Slots[id0.Addr].Type == LIST && in.V.Slots[id1.Addr].Type == LIST {
 		// List comparison - compare element by element
 		l0, l1 := in.GetAnyRef(id0).(bytecode.List), in.GetAnyRef(id1).(bytecode.List)
 
@@ -1255,7 +1529,7 @@ func (in *Interpreter) CompareLess(id0, id1 uint64) (bool, error) {
 
 	} else {
 		type_map := map[byte]string{NOTH: "noth", INT: "int", FLOAT: "float", BYTE: "byte", STR: "str", FUNC: "func", SPAN: "span", ID: "id", LIST: "list", BOOL: "bool", PAIR: "pair", ARR: "arr"}
-		return false, fmt.Errorf("impossible comparison in sort function: #%d (%s) against #%d (%s)", id0, type_map[in.V.Slots[id0].Type], id1, type_map[in.V.Slots[id1].Type])
+		return false, fmt.Errorf("impossible comparison in sort function: #%d (%s) against #%d (%s)", id0, type_map[in.V.Slots[id0.Addr].Type], id1, type_map[in.V.Slots[id1.Addr].Type])
 	}
 }
 
@@ -1280,7 +1554,7 @@ func (in *Interpreter) Parse(str string) []string {
 	for _, match := range reg_var.FindAllString(str, -1) {
 		code := match[1 : len(match)-1]
 		if variable, ok := in.V.Names[code]; ok {
-			a := in.GetAnyRef(uint64(variable))
+			a := in.GetAnyRef(&bytecode.MinPtr{uint64(variable), in.Id})
 			text := ""
 			switch v := a.(type) {
 			case string:
@@ -1407,7 +1681,7 @@ func (in *Interpreter) Fmt(str string) string {
 	for _, match := range reg_var.FindAllString(str, -1) {
 		code := match[1 : len(match)-1]
 		if variable, ok := in.V.Names[code]; ok {
-			a := in.GetAnyRef(uint64(variable))
+			a := in.GetAnyRef(&bytecode.MinPtr{uint64(variable), in.Id})
 			text := ""
 			switch v := a.(type) {
 			case string:
@@ -1550,7 +1824,7 @@ func (in *Interpreter) Run(node_name string) bool {
 				if action.Type == "'" {
 					in.Save(action.Target, in.GetAnyRef(p.Ids[ind]))
 				} else {
-					in.V.Names[actions[focus].Target] = int(p.Ids[ind])
+					in.V.Names[actions[focus].Target] = int(p.Ids[ind].Addr)
 				}
 			case LIST:
 				// TODO: add errors and slice support
@@ -1562,14 +1836,14 @@ func (in *Interpreter) Run(node_name string) bool {
 				if action.Type == "'" {
 					in.Save(action.Target, in.GetAnyRef(l.Ids[ind]))
 				} else {
-					in.V.Names[action.Target] = int(l.Ids[ind])
+					in.V.Names[action.Target] = int(l.Ids[ind].Addr)
 				}
 			}
 		case "deep":
 			in.Save(string(action.Variables[0]), in.GetAny(string(action.Variables[1])))
 		case "pair":
 			p := bytecode.Pair{}
-			p.Ids = make(map[string]uint64)
+			p.Ids = make(map[string]*bytecode.MinPtr)
 			for n := 0; n < len(actions[focus].Variables); n += 2 {
 				PairAppend(&p, in, in.GetAny(string(actions[focus].Variables[n+1])), in.GetAny(string(actions[focus].Variables[n])))
 			}
@@ -1677,187 +1951,6 @@ func (in *Interpreter) Run(node_name string) bool {
 				in.Save("_return_", l)
 			}
 			in.halt = true
-		case "pool_trash":
-			// --- parse variables ---
-			input_lefts := []string{}
-			input_rights := []string{}
-			output_lefts := []string{}
-			output_rights := []string{}
-
-			changed := false
-			vars := action.Variables
-			i := 0
-			for i < len(vars) {
-				left := string(vars[i])
-				if left == "Nothing" {
-					changed = true
-					i++
-					continue
-				}
-				right := ""
-				if i+1 < len(vars) {
-					right = string(vars[i+1])
-				}
-				if !changed {
-					input_lefts = append(input_lefts, left)
-					input_rights = append(input_rights, right)
-				} else {
-					output_lefts = append(output_lefts, left)
-					output_rights = append(output_rights, right)
-				}
-				i += 2
-			}
-
-			// must have at least one input
-			//if len(input_lefts) == 0 {
-			//	return in.Error(action, "pool requires at least one input list", "arg_count")
-			//}
-
-			cores := runtime.NumCPU()
-			if cores < 1 {
-				cores = 1
-			}
-
-			// --- partition each input list into per-worker chunks ---
-			// chunksPerInput[inputIndex][workerIndex] -> []uint64 (ids)
-			chunksPerInput := make([][][]uint64, len(input_lefts))
-			for idx, key := range input_lefts {
-				src := in.NamedList(key)
-				total := len(src.Ids)
-				chunksPerInput[idx] = make([][]uint64, cores)
-				for w := 0; w < cores; w++ {
-					start := w * total / cores
-					end := (w + 1) * total / cores
-					if start < end {
-						chunksPerInput[idx][w] = append([]uint64(nil), src.Ids[start:end]...)
-					} else {
-						chunksPerInput[idx][w] = []uint64{}
-					}
-				}
-			}
-
-			// --- create worker interpreters and save their chunk lists locally ---
-			interpreters := make([]*Interpreter, cores)
-			workerChunkNames := make([][]string, cores) // per-worker list of names saved in worker
-			for w := 0; w < cores; w++ {
-				f_in := &Interpreter{V: &Vars{Names: make(map[string]int)}}
-				f_in.Copy2(in) // your copy routine that deep-copies needed data
-
-				names := make([]string, len(input_lefts))
-				for j, key := range input_lefts {
-					chunkIds := chunksPerInput[j][w]
-					var l bytecode.List
-					for _, id := range chunkIds {
-						// copy element into worker's Vars and append
-						val := in.GetAnyRef(id)
-						ListAppend(&l, f_in, val)
-					}
-					tmpName := fmt.Sprintf("_pool_chunk_w%d_input%d_%s", w, j, key)
-					f_in.Save(tmpName, l)
-					names[j] = tmpName
-				}
-
-				interpreters[w] = f_in
-				workerChunkNames[w] = names
-			}
-
-			// --- start workers; each returns []bytecode.List (one list per output left) ---
-			type workerResult struct {
-				lists []bytecode.List // lists local to worker (IDs in worker's Vars)
-				err   error
-			}
-			resultsChans := make([]chan workerResult, cores)
-			for w := 0; w < cores; w++ {
-				resultsChans[w] = make(chan workerResult, 1)
-				go func(w int) {
-					// worker closure
-					win := interpreters[w]
-					srcNames := workerChunkNames[w]
-					// resolve chunks in worker
-					chunks := make([]bytecode.List, len(srcNames))
-					for j, nm := range srcNames {
-						chunks[j] = win.NamedList(nm)
-					}
-
-					// prepare outputs (one list per output_lefts)
-					outLists := make([]bytecode.List, len(output_lefts))
-					for j := range outLists {
-						outLists[j] = bytecode.List{}
-					}
-
-					// iterate indices (use shortest chunk length to be safe)
-					length := 0
-					if len(chunks) > 0 {
-						length = len(chunks[0].Ids)
-						for _, c := range chunks {
-							if len(c.Ids) < length {
-								length = len(c.Ids)
-							}
-						}
-					}
-
-					var werr error
-					for idx := 0; idx < length; idx++ {
-						// bind inputs inside worker
-						for j := 0; j < len(chunks); j++ {
-							id := chunks[j].Ids[idx]
-							val := in.GetAnyRef(id)
-							win.Save(input_rights[j], val)
-						}
-
-						// run the node body
-						if err := win.Run(action.Target); err != false {
-							// store last error, but continue other items
-							werr = fmt.Errorf("worker error")
-							continue
-						}
-
-						// collect outputs from worker variables, append into outLists
-						for outIdx := range output_lefts {
-							val := win.GetAny(output_rights[outIdx])
-							ListAppend(&outLists[outIdx], win, val)
-						}
-					}
-
-					resultsChans[w] <- workerResult{lists: outLists, err: werr}
-				}(w)
-			}
-
-			// --- collect worker results and merge into main interpreter ---
-			workerResults := make([]workerResult, cores)
-			for w := 0; w < cores; w++ {
-				workerResults[w] = <-resultsChans[w]
-				close(resultsChans[w])
-			}
-
-			// init combined lists in main interpreter
-			combinedLists := make([]bytecode.List, len(output_lefts))
-			for i := range combinedLists {
-				combinedLists[i] = bytecode.List{}
-			}
-
-			// merge: for each worker, for each outList element, fetch value from that worker and append to main
-			for w := 0; w < cores; w++ {
-				res := workerResults[w]
-				win := interpreters[w]
-				for outIdx := range res.lists {
-					// res.lists[outIdx] contains IDs local to win
-					for _, localId := range res.lists[outIdx].Ids {
-						val := win.GetAnyRef(localId)
-						ListAppend(&combinedLists[outIdx], in, val)
-					}
-				}
-			}
-
-			// save combined outputs into main interpreter
-			for outIdx, outName := range output_lefts {
-				in.Save(outName, combinedLists[outIdx])
-			}
-
-			// cleanup worker interpreters
-			for _, win := range interpreters {
-				win.Destroy()
-			}
 		case "pool":
 			input_lefts := []string{}
 			input_rights := []string{}
@@ -1908,6 +2001,7 @@ func (in *Interpreter) Run(node_name string) bool {
 			step := float64(length) / float64(cores)
 			for range cores {
 				f_in := &Interpreter{V: &Vars{Names: make(map[string]int)}}
+				f_in.Id = rand.Uint64()
 				f_in.Copy2(in)
 				for n, left := range input_lefts {
 					chunks := in.NamedList(input_lefts[n]).Ids[int(math.Round(focus)):int(math.Round(focus+step))]
@@ -2018,6 +2112,7 @@ func (in *Interpreter) Run(node_name string) bool {
 			for w := 0; w < cores; w++ {
 				// create worker interpreter copy
 				f_in := &Interpreter{V: &Vars{Names: make(map[string]int)}}
+				f_in.Id = rand.Uint64()
 				f_in.Copy2(in)
 
 				chunkNames := []string{}
@@ -2370,19 +2465,19 @@ func (in *Interpreter) Run(node_name string) bool {
 					case LIST:
 						l := in.NamedList(span_name)
 						valIndex := l.Ids[idx]
-						switch in.V.Slots[valIndex].Type {
+						switch in.V.Slots[valIndex.Addr].Type {
 						case INT:
-							in.Save(targets[i], in.V.Ints[in.V.Slots[valIndex].Index])
+							in.Save(targets[i], in.V.Ints[in.V.Slots[valIndex.Addr].Index])
 						case FLOAT:
-							in.Save(targets[i], in.V.Floats[in.V.Slots[valIndex].Index])
+							in.Save(targets[i], in.V.Floats[in.V.Slots[valIndex.Addr].Index])
 						case STR:
-							in.Save(targets[i], in.V.Strs[in.V.Slots[valIndex].Index])
+							in.Save(targets[i], in.V.Strs[in.V.Slots[valIndex.Addr].Index])
 						case BOOL:
-							in.Save(targets[i], in.V.Bools[in.V.Slots[valIndex].Index])
+							in.Save(targets[i], in.V.Bools[in.V.Slots[valIndex.Addr].Index])
 						case BYTE:
-							in.Save(targets[i], in.V.Bytes[in.V.Slots[valIndex].Index])
+							in.Save(targets[i], in.V.Bytes[in.V.Slots[valIndex.Addr].Index])
 						case ID:
-							in.Save(targets[i], in.V.Ids[in.V.Slots[valIndex].Index])
+							in.Save(targets[i], in.V.Ids[in.V.Slots[valIndex.Addr].Index])
 						default:
 							panic("unsupported span dtype in for loop")
 						}
@@ -2413,7 +2508,7 @@ func (in *Interpreter) Run(node_name string) bool {
 				in.Save(string(action.Variables[0]), err)
 				// fmt.Printf("Runtime error: %s\nLocation: line %d\nAction: %s\nType: %s\nLine:\n%s\n", message, act.Source.N+1, act.Type, etype, strings.ReplaceAll(act.Source.Source, "\r\n", "\n"))
 				p := bytecode.Pair{}
-				p.Ids = make(map[string]uint64)
+				p.Ids = make(map[string]*bytecode.MinPtr)
 				PairAppend(&p, in, big.NewInt(int64(in.ErrSource.N)+1), "line")
 				PairAppend(&p, in, in.ErrSource.Source, "source")
 				PairAppend(&p, in, action.Type, "action")
@@ -2448,7 +2543,7 @@ func (in *Interpreter) Run(node_name string) bool {
 				in.Save(action.Target, string(out))
 			}
 		case "GC":
-			in.GC()
+			in.GCE()
 		default:
 			fn := in.NamedFunc(action.Type) //in.GetAny(action.Type).(*bytecode.Function) //in.V.Funcs[in.V.Names[actions[focus].Type]]
 			// TODO: add boundcheck
@@ -2477,7 +2572,7 @@ func (in *Interpreter) Run(node_name string) bool {
 					case SPAN:
 						fmt.Printf("%s ", in.StringSpan(in.NamedSpan(string(v))))
 					case ID:
-						fmt.Printf("id.%d ", in.NamedId(string(v)))
+						fmt.Printf("id.%s ", in.NamedId(string(v)).String())
 					case LIST:
 						l := in.NamedList(string(v))
 						fmt.Print(ListString(&l, in) + " ")
@@ -2669,8 +2764,8 @@ func (in *Interpreter) Run(node_name string) bool {
 					in.Error(action, "error retrieving data from provided id", "id")
 					return true
 				}
-				id := in.GetAny(string(action.Variables[0])).(uint64)
-				if len(in.V.Slots) <= int(id) {
+				id := in.GetAny(string(action.Variables[0])).(*bytecode.MinPtr)
+				if len(in.V.Slots) <= int(id.Addr) {
 					in.Error(action, "invalid value id: higher than available memory", "id")
 					return true
 				}
@@ -2799,6 +2894,7 @@ func (in *Interpreter) Run(node_name string) bool {
 							f_in := Interpreter{V: &Vars{
 								Names: make(map[string]int),
 							}}
+							f_in.Id = rand.Uint64()
 							f_in.Copy(in)
 							f_in.Save(string(fn.Vars[0]), in.GetAnyRef(in.NamedList(action.First()).Ids[ptr]))
 							err := f_in.Run(fn.Node)
@@ -2856,6 +2952,7 @@ func (in *Interpreter) Run(node_name string) bool {
 							f_in := Interpreter{V: &Vars{
 								Names: make(map[string]int),
 							}}
+							f_in.Id = rand.Uint64()
 							f_in.Copy(in)
 							f_in.Save("item", in.GetAnyRef(in.NamedList(action.First()).Ids[ptr]))
 							err := f_in.Run(node_name_sort)
@@ -3013,7 +3110,7 @@ func (in *Interpreter) Run(node_name string) bool {
 					return true
 				}
 				pnew := bytecode.Pair{}
-				pnew.Ids = make(map[string]uint64)
+				pnew.Ids = make(map[string]*bytecode.MinPtr)
 				PairAppend(&pnew, in, big.NewInt(int64(resp.StatusCode)), "code")
 				PairAppend(&pnew, in, string(body), "body")
 				in.Save(actions[focus].Target, pnew)
@@ -3041,7 +3138,7 @@ func (in *Interpreter) Run(node_name string) bool {
 					return true
 				}
 				pnew := bytecode.Pair{}
-				pnew.Ids = make(map[string]uint64)
+				pnew.Ids = make(map[string]*bytecode.MinPtr)
 				PairAppend(&pnew, in, big.NewInt(int64(resp.StatusCode)), "code")
 				PairAppend(&pnew, in, string(body), "body")
 				in.Save(actions[focus].Target, pnew)
@@ -3106,7 +3203,7 @@ func (in *Interpreter) Run(node_name string) bool {
 				if err {
 					return err
 				}
-				in.Save(action.Target, uint64(in.V.Names[string(action.Variables[0])]))
+				in.Save(action.Target, &bytecode.MinPtr{uint64(in.V.Names[string(action.Variables[0])]), in.Id})
 			case "append":
 				err := in.CheckArgN(action, 2, 2)
 				if err {
@@ -3242,6 +3339,7 @@ func (in *Interpreter) Run(node_name string) bool {
 					f_in := Interpreter{V: &Vars{
 						Names: make(map[string]int),
 					}}
+					f_in.Id = rand.Uint64()
 					f_in.Copy(in)
 					for n, fn_arg := range fn.Vars {
 						fn_arg_str := string(fn_arg)
@@ -3457,7 +3555,7 @@ func (in *Interpreter) Compare(v0, v1 any) bool {
 			return false
 		}
 		for n := range v0t.Ids {
-			if in.V.Slots[v0t.Ids[n]].Type != in.V.Slots[v1t.Ids[n]].Type {
+			if in.V.Slots[v0t.Ids[n].Addr].Type != in.V.Slots[v1t.Ids[n].Addr].Type {
 				return false
 			}
 			if !in.Compare(in.GetAnyRef(v0t.Ids[n]), in.GetAnyRef(v1t.Ids[n])) {
@@ -3586,7 +3684,7 @@ func (in *Interpreter) CopyDeep(og *Interpreter) {
 
 		case bytecode.Pair:
 			// Deep copy Pair contents
-			newPair := bytecode.Pair{Ids: make(map[string]uint64)}
+			newPair := bytecode.Pair{Ids: make(map[string]*bytecode.MinPtr)}
 			for name, id := range v.Ids {
 				elem := og.GetAnyRef(id)
 				PairAppend(&newPair, in, elem, name)
@@ -3615,7 +3713,7 @@ func (in *Interpreter) CopyList(vname string, og *Interpreter) bytecode.List {
 func (in *Interpreter) CopyPair(vname string, og *Interpreter) bytecode.Pair {
 	l := og.GetAny(vname).(bytecode.Pair)
 	lnew := bytecode.Pair{}
-	lnew.Ids = make(map[string]uint64)
+	lnew.Ids = make(map[string]*bytecode.MinPtr)
 	for key, id := range l.Ids {
 		a := og.GetAnyRef(id)
 		newid := in.SaveRefNew(a)
@@ -3629,6 +3727,6 @@ func (in *Interpreter) Destroy() {
 	//	in.RemoveName(key)
 	//}
 
-	in.GC()
+	in.GCE()
 	in = &Interpreter{}
 }

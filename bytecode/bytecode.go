@@ -59,6 +59,10 @@ type MinPtr struct {
 	Id   uint64
 }
 
+func (mp *MinPtr) String() string {
+	return fmt.Sprintf("%x@%x", mp.Addr, mp.Id)
+}
+
 type Token struct {
 	Type  string
 	Value string
@@ -1302,7 +1306,7 @@ type Vars struct {
 }
 
 type List struct {
-	Ids []uint64
+	Ids []*MinPtr
 }
 
 type Array struct {
@@ -1467,5 +1471,5 @@ type Span struct {
 }
 
 type Pair struct {
-	Ids map[string]uint64
+	Ids map[string]*MinPtr
 }
