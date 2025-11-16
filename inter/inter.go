@@ -123,6 +123,8 @@ func (in *Interpreter) Save(name string, v any) {
 				in.V.Bools[in.V.Slots[old_id].Index] = v.(bool)
 			case LIST:
 				in.V.Lists[in.V.Slots[old_id].Index] = v.(bytecode.List)
+			case ID:
+				in.V.Ids[in.V.Slots[old_id].Index] = v.(*bytecode.MinPtr)
 			case ARR:
 				in.V.Arrs[in.V.Slots[old_id].Index] = v.(bytecode.Array)
 			case SPAN:
@@ -244,7 +246,18 @@ func (in *Interpreter) SaveRef(old_id *bytecode.MinPtr, v any) {
 	case int16:
 		// TODO: handle Nothing
 	}
-	// in.V.Names[name] = len(in.V.Slots)
+	/*
+		name := ""
+		for key, value := range in.V.Names {
+			if old_id.Id == uint64(value) {
+				name = key
+				break
+			}
+		}
+		if name != "" {
+			in.V.Names[name] = len(in.V.Slots)
+		}
+	*/
 	in.V.Slots = append(in.V.Slots, entry)
 }
 
@@ -653,6 +666,7 @@ func (in *Interpreter) GC() {
 	runtime.GC()
 }
 
+// Garbage Collector Experimental
 func (in *Interpreter) GCE() {
 	in.V.gcCycle++
 	if in.V.gcCycle >= in.V.gcMax {
@@ -2233,11 +2247,18 @@ func (in *Interpreter) Run(node_name string) bool {
 				}
 			*/
 		case "&=":
-			in.V.Names[action.Target] = in.V.Names[string(actions[focus].Variables[0])]
-			// id := in.V.Names[string(actions[focus].Variables[0])]
-			// in.V.Names[actions[focus].Target] = id
-			// u := in.V.Names[string(actions[focus].Variables[0])]
-			// in.Save(actions[focus].Target, u)
+			// in.V.Names[action.Target] = in.V.Names[string(actions[focus].Variables[0])]
+			interp := in
+			_, ok := interp.V.Names[action.Target]
+			for !ok {
+				interp = interp.Parent
+				if interp == nil {
+					in.Error(action, "undeclared variable name", "undeclared")
+					return true
+				}
+				_, ok = interp.V.Names[action.Target]
+			}
+			interp.Save(action.Target, in.GetAny(action.First()))
 		case "repeat":
 			err := in.CheckArgN(action, 1, 1)
 			if err {
@@ -2764,12 +2785,12 @@ func (in *Interpreter) Run(node_name string) bool {
 					in.Error(action, "error retrieving data from provided id", "id")
 					return true
 				}
-				id := in.GetAny(string(action.Variables[0])).(*bytecode.MinPtr)
-				if len(in.V.Slots) <= int(id.Addr) {
-					in.Error(action, "invalid value id: higher than available memory", "id")
-					return true
+				id := in.NamedId(action.First()) //in.GetAny(string(action.Variables[0])).(*bytecode.MinPtr)
+				interp := in
+				for interp.Id != id.Id {
+					interp = interp.Parent
 				}
-				in.Save(action.Target, in.GetAnyRef(id))
+				in.Save(action.Target, interp.GetAnyRef(id))
 			case "read":
 				err := in.CheckArgN(actions[focus], 1, 1)
 				if err {
@@ -3033,6 +3054,19 @@ func (in *Interpreter) Run(node_name string) bool {
 					return true
 				}
 				in.Save(action.Target, str)
+			case "exit":
+				err := in.CheckArgN(action, 0, 1)
+				if err {
+					return err
+				}
+				if len(action.Variables) > 0 {
+					err = in.CheckDtype(action, 0, INT)
+					if err {
+						return err
+					}
+					os.Exit(int(in.NamedInt(action.First()).Int64()))
+				}
+				os.Exit(0)
 			case "system":
 				err := in.CheckArgN(actions[focus], 1, 1)
 				if err {
@@ -3046,7 +3080,7 @@ func (in *Interpreter) Run(node_name string) bool {
 				case "os":
 					in.Save(actions[focus].Target, runtime.GOOS)
 				case "version":
-					in.Save(actions[focus].Target, "4.2.7")
+					in.Save(actions[focus].Target, "4.3.0")
 				case "args":
 					l := bytecode.List{}
 					for _, arg := range os.Args {
@@ -3059,6 +3093,8 @@ func (in *Interpreter) Run(node_name string) bool {
 						in.Error(action, err.Error(), "sys")
 					}
 					in.Save(actions[focus].Target, wd)
+				case "file":
+					in.Save(action.Target, ternary(in.File != nil, *in.File, ""))
 				}
 			case "chdir":
 				err := in.CheckArgN(action, 1, 1)
@@ -3199,11 +3235,35 @@ func (in *Interpreter) Run(node_name string) bool {
 				}
 				in.Save(action.Target, strings.ToLower(in.NamedStr(string(action.Variables[0]))))
 			case "id":
-				err := in.CheckArgN(action, 1, 1)
+				err := in.CheckArgN(action, 1, 2)
 				if err {
 					return err
 				}
-				in.Save(action.Target, &bytecode.MinPtr{uint64(in.V.Names[string(action.Variables[0])]), in.Id})
+				if len(action.Variables) == 1 {
+					interp := in
+					_, ok := interp.V.Names[action.First()]
+					for !ok {
+						interp = interp.Parent
+						_, ok = interp.V.Names[action.First()]
+					}
+					// fmt.Println("Pointer:", interp.V.Names[action.First()], interp.Id)
+					in.Save(action.Target, &bytecode.MinPtr{uint64(interp.V.Names[action.First()]), interp.Id})
+				} else {
+					err = in.CheckDtype(action, 1, ID)
+					if err {
+						return err
+					}
+					interp := in
+					ptr := in.NamedId(action.Second())
+					for interp.Id != ptr.Id {
+						interp = interp.Parent
+					}
+					interp.SaveRef(ptr, in.GetAny(action.First()))
+					// newptr := interp.SaveRefNew(in.GetAny(action.First()))
+					// interp.V.Slots[ptr.Addr] = interp.V.Slots[newptr.Addr]
+					// TODO: check if removal of last Slot is needed
+					// interp.SaveRef(ptr, in.GetAny(action.First()))
+				}
 			case "append":
 				err := in.CheckArgN(action, 2, 2)
 				if err {
@@ -3343,12 +3403,15 @@ func (in *Interpreter) Run(node_name string) bool {
 					f_in.Copy(in)
 					for n, fn_arg := range fn.Vars {
 						fn_arg_str := string(fn_arg)
-						if in.V.Slots[in.V.Names[string(action.Variables[n])]].Type == PAIR {
+						if in.Type(string(action.Variables[n])) == PAIR {
 							p := f_in.CopyPair(string(action.Variables[n]), in)
 							f_in.Save(fn_arg_str, p)
-						} else if in.V.Slots[in.V.Names[string(action.Variables[n])]].Type == LIST {
+						} else if in.Type(string(action.Variables[n])) == LIST {
 							l := f_in.CopyList(string(action.Variables[n]), in)
 							f_in.Save(fn_arg_str, l)
+						} else if in.Type(string(action.Variables[n])) == ID {
+							id := in.NamedId(string(action.Variables[n]))
+							f_in.Save(fn_arg_str, id)
 						} else {
 							f_in.Save(fn_arg_str, in.GetAny(string(action.Variables[n])))
 						}
