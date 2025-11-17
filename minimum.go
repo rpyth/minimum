@@ -251,6 +251,7 @@ func main() {
 		if is_debug {
 			bytecode.PrintActs(in.Code)
 		}
+		in.Nothing("Nothing")
 		in.Run(fmt.Sprintf("_node_%d", bytecode.NodeN-1))
 		//inter.StartFull(code, fname)
 		return
@@ -264,6 +265,7 @@ func main() {
 	rl, _ := readline.New("?>>")
 	defer rl.Close()
 	in := inter.NewInterpreter(`!print "[Minimum v"+(!system "version")+" on "+(!system "os")+"]"`, ".") //Interpreter{}
+	in.Nothing("Nothing")
 	in.Run(fmt.Sprintf("_node_%d", bytecode.NodeN-1))
 	for {
 		in.GC()

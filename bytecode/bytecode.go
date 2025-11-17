@@ -1056,8 +1056,36 @@ func GetActs(tokens []Token, sl *SourceLine) []Action {
 		// deep assignment start
 		deep := false
 		for _, targ := range targets_tok {
-			// TODO: fix this horrible piece of shit
 			if Has(targ, Token{"SUB", ""}) {
+				nest := [][]Token{}
+				for Has(targ, Token{"SUB", ""}) {
+					for i := 0; i < len(targ); i++ {
+						if targ[i].Type == "SUB" {
+							nest = append(nest, targ[:i])
+							targ = Unlink(targ[i+1:])
+							break
+						}
+					}
+				}
+				nest = append(nest, Unlink(targ))
+				item := GetTargetAuto(tokens[0:1], &actions, sl)
+				ind_names := []Variable{Variable(nest[0][0].Value), Variable(item)}
+				for n, expr := range nest {
+					if n == 0 {
+						continue
+					}
+					// actlet := GetActs(expr, sl)
+					// targa := actlet[len(actlet)-1].Target
+					targa := GetTargetAuto(expr, &actions, sl)
+					ind_names = append(ind_names, Variable(targa))
+					// actions = append(actions, actlet...)
+				}
+				action := Action{"", "sub", ind_names, sl}
+				actions = append(actions, action)
+				deep = true
+			}
+			// TODO: fix this horrible piece of shit
+			if false && Has(targ, Token{"SUB", ""}) {
 				deep = true
 				/*
 					actlet := GetActs(targ, sl)
@@ -1281,7 +1309,7 @@ type Function struct {
 }
 
 func GenerateFuns() []Function {
-	strs := []string{"print", "out", "where", "len", "read", "write", "exit", "type", "convert", "list", "array", "pair", "append", "system", "source", "sort", "id", "ternary", "rand", "input", "glob", "env", "range", "fmt", "chdir", "split", "join", "to_upper", "to_lower", "cp", "mv", "rm", "pop", "itc", "cti", "has", "index", "replace", "re_match", "re_find", "rget", "rpost", "arrm", "value"}
+	strs := []string{"print", "out", "where", "len", "read", "write", "exit", "type", "convert", "list", "array", "pair", "append", "system", "source", "run", "sort", "id", "ternary", "rand", "input", "glob", "env", "range", "fmt", "chdir", "split", "join", "to_upper", "to_lower", "cp", "mv", "rm", "pop", "itc", "cti", "has", "index", "replace", "re_match", "re_find", "rget", "rpost", "arrm", "value", "sub"}
 	fs := []Function{}
 	for _, str := range strs {
 		fs = append(fs, Function{Name: str})

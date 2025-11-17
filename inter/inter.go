@@ -1831,7 +1831,7 @@ func (in *Interpreter) Run(node_name string) bool {
 				in.Save(actions[focus].Target, in.NamedByte(o)+in.NamedByte(t))
 			}
 		case "'", "''":
-			switch in.V.Slots[in.V.Names[string(action.Variables[0])]].Type {
+			switch in.Type(action.First()) {
 			case PAIR:
 				p := in.NamedPair(string(action.Variables[0]))
 				ind := PairKey(in, in.GetAny(string(action.Variables[1])))
@@ -1855,6 +1855,18 @@ func (in *Interpreter) Run(node_name string) bool {
 			}
 		case "deep":
 			in.Save(string(action.Variables[0]), in.GetAny(string(action.Variables[1])))
+		case "sub":
+			l := in.NamedList(action.First())
+			inds := []any{}
+			for _, ind := range action.Variables[2:] {
+				inds = append(inds, in.GetAny(string(ind)))
+			}
+			err := in.DeepAssign(&l, in.GetAny(action.Second()), inds)
+			if err != nil {
+				in.Error(action, err.Error(), "index")
+				return true
+			}
+			in.Save(action.Target, l)
 		case "pair":
 			p := bytecode.Pair{}
 			p.Ids = make(map[string]*bytecode.MinPtr)
@@ -2486,19 +2498,25 @@ func (in *Interpreter) Run(node_name string) bool {
 					case LIST:
 						l := in.NamedList(span_name)
 						valIndex := l.Ids[idx]
-						switch in.V.Slots[valIndex.Addr].Type {
+						interp := in
+						for interp.Id != valIndex.Id {
+							interp = interp.Parent
+						}
+						switch interp.V.Slots[valIndex.Addr].Type {
 						case INT:
-							in.Save(targets[i], in.V.Ints[in.V.Slots[valIndex.Addr].Index])
+							in.Save(targets[i], interp.V.Ints[interp.V.Slots[valIndex.Addr].Index])
 						case FLOAT:
-							in.Save(targets[i], in.V.Floats[in.V.Slots[valIndex.Addr].Index])
+							in.Save(targets[i], interp.V.Floats[interp.V.Slots[valIndex.Addr].Index])
 						case STR:
-							in.Save(targets[i], in.V.Strs[in.V.Slots[valIndex.Addr].Index])
+							in.Save(targets[i], interp.V.Strs[interp.V.Slots[valIndex.Addr].Index])
 						case BOOL:
-							in.Save(targets[i], in.V.Bools[in.V.Slots[valIndex.Addr].Index])
+							in.Save(targets[i], interp.V.Bools[interp.V.Slots[valIndex.Addr].Index])
 						case BYTE:
-							in.Save(targets[i], in.V.Bytes[in.V.Slots[valIndex.Addr].Index])
+							in.Save(targets[i], interp.V.Bytes[interp.V.Slots[valIndex.Addr].Index])
 						case ID:
-							in.Save(targets[i], in.V.Ids[in.V.Slots[valIndex.Addr].Index])
+							in.Save(targets[i], interp.V.Ids[interp.V.Slots[valIndex.Addr].Index])
+						case LIST:
+							in.Save(targets[i], interp.V.Lists[interp.V.Slots[valIndex.Addr].Index])
 						default:
 							panic("unsupported span dtype in for loop")
 						}
@@ -2648,6 +2666,22 @@ func (in *Interpreter) Run(node_name string) bool {
 					return true
 				}
 				in.Compile(string(b), in.NamedStr(string(action.Variables[0])))
+				last_node := fmt.Sprintf("_node_%d", bytecode.NodeN-1)
+				err = in.Run(last_node)
+				if err {
+					return err
+				}
+			case "run":
+				err := in.CheckArgN(action, 1, 1)
+				if err {
+					return true
+				}
+				err = in.CheckDtype(action, 0, STR)
+				if err {
+					return true
+				}
+				c := in.NamedStr(action.First())
+				in.Compile(c, "\""+c+"\"")
 				last_node := fmt.Sprintf("_node_%d", bytecode.NodeN-1)
 				err = in.Run(last_node)
 				if err {
@@ -3447,6 +3481,42 @@ func (in *Interpreter) Run(node_name string) bool {
 	return false
 }
 
+func (in *Interpreter) DeepAssign(receiver any, item any, inds []any) error {
+	switch rec := receiver.(type) {
+	case *bytecode.List:
+		if len(inds) == 1 {
+			switch ind := inds[0].(type) {
+			case *big.Int:
+				i := int(ind.Int64())
+				if i < 0 {
+					i += len(rec.Ids)
+				}
+				if i < 0 || i >= len(rec.Ids) {
+					return fmt.Errorf("impossible index: %d for list of length %d", i, len(rec.Ids))
+				}
+				rec.Ids[i] = in.GetRef(item)
+			}
+		} else {
+			switch ind := inds[0].(type) {
+			case *big.Int:
+				i := int(ind.Int64())
+				if i < 0 {
+					i += len(rec.Ids)
+				}
+				if i < 0 || i >= len(rec.Ids) {
+					return fmt.Errorf("impossible index: %d for list of length %d", i, len(rec.Ids))
+				}
+				sublist := in.GetAnyRef(rec.Ids[i]).(bytecode.List)
+				return in.DeepAssign(&sublist, item, inds[1:])
+			}
+		}
+	default:
+		types := map[byte]string{NOTH: "noth", INT: "int", FLOAT: "float", BYTE: "byte", STR: "str", FUNC: "func", SPAN: "span", ID: "id", LIST: "list", BOOL: "bool", PAIR: "pair", ARR: "arr"}
+		return fmt.Errorf("unsupported assignment target: %s", types[TypeToByte(rec)])
+	}
+	return nil
+}
+
 func chunkBy[T any](items []T, chunkSize int) (chunks [][]T) {
 	for chunkSize < len(items) {
 		items, chunks = items[chunkSize:], append(chunks, items[0:chunkSize:chunkSize])
@@ -3618,7 +3688,11 @@ func (in *Interpreter) Compare(v0, v1 any) bool {
 			return false
 		}
 		for n := range v0t.Ids {
-			if in.V.Slots[v0t.Ids[n].Addr].Type != in.V.Slots[v1t.Ids[n].Addr].Type {
+			interp := in
+			for v0t.Ids[n].Id != interp.Id {
+				interp = interp.Parent
+			}
+			if interp.V.Slots[v0t.Ids[n].Addr].Type != interp.V.Slots[v1t.Ids[n].Addr].Type {
 				return false
 			}
 			if !in.Compare(in.GetAnyRef(v0t.Ids[n]), in.GetAnyRef(v1t.Ids[n])) {
@@ -3763,7 +3837,7 @@ func (in *Interpreter) CopyDeep(og *Interpreter) {
 }
 
 func (in *Interpreter) CopyList(vname string, og *Interpreter) bytecode.List {
-	l := og.GetAny(vname).(bytecode.List)
+	l := og.NamedList(vname) //og.GetAny(vname).(bytecode.List)
 	lnew := bytecode.List{}
 	for _, id := range l.Ids {
 		a := og.GetAnyRef(id)
@@ -3792,4 +3866,17 @@ func (in *Interpreter) Destroy() {
 
 	in.GCE()
 	in = &Interpreter{}
+}
+
+func (in *Interpreter) CopyListDeep(l bytecode.List, og *Interpreter) bytecode.List {
+	nl := bytecode.List{}
+	for _, ref := range l.Ids {
+		a := og.GetAnyRef(ref)
+		if og.V.Slots[ref.Addr].Type == LIST {
+			a = in.CopyListDeep(a.(bytecode.List), og)
+		}
+		ptr := in.SaveRefNew(a)
+		nl.Ids = append(nl.Ids, ptr)
+	}
+	return nl
 }
