@@ -305,6 +305,9 @@ func main() {
 		rl.SetPrompt("?>>")
 		in.Compile(source, ".")
 		last_node := fmt.Sprintf("_node_%d", bytecode.NodeN-1)
+		if len(in.Code[last_node]) == 0 {
+			continue
+		}
 		gc := in.Code[last_node][len(in.Code[last_node])-1]
 		in.Code[last_node] = in.Code[last_node][:len(in.Code[last_node])-1]
 		acts := in.Code[last_node]
