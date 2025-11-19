@@ -1856,17 +1856,36 @@ func (in *Interpreter) Run(node_name string) bool {
 		case "deep":
 			in.Save(string(action.Variables[0]), in.GetAny(string(action.Variables[1])))
 		case "sub":
-			l := in.NamedList(action.First())
-			inds := []any{}
-			for _, ind := range action.Variables[2:] {
-				inds = append(inds, in.GetAny(string(ind)))
+			merr := in.CheckArgN(action, 3, -1)
+			if merr {
+				return merr
 			}
-			err := in.DeepAssign(&l, in.GetAny(action.Second()), inds)
-			if err != nil {
-				in.Error(action, err.Error(), "index")
-				return true
+			merr = in.CheckDtype(action, 0, LIST, PAIR)
+			if in.Type(action.First()) == LIST {
+				l := in.NamedList(action.First())
+				inds := []any{}
+				for _, ind := range action.Variables[2:] {
+					inds = append(inds, in.GetAny(string(ind)))
+				}
+				err := in.DeepAssign(&l, in.GetAny(action.Second()), inds)
+				if err != nil {
+					in.Error(action, err.Error(), "index")
+					return true
+				}
+				in.Save(action.Target, l)
+			} else {
+				l := in.NamedPair(action.First())
+				inds := []any{}
+				for _, ind := range action.Variables[2:] {
+					inds = append(inds, in.GetAny(string(ind)))
+				}
+				err := in.DeepAssign(&l, in.GetAny(action.Second()), inds)
+				if err != nil {
+					in.Error(action, err.Error(), "index")
+					return true
+				}
+				in.Save(action.Target, l)
 			}
-			in.Save(action.Target, l)
 		case "pair":
 			p := bytecode.Pair{}
 			p.Ids = make(map[string]*bytecode.MinPtr)
@@ -2687,6 +2706,21 @@ func (in *Interpreter) Run(node_name string) bool {
 				if err {
 					return err
 				}
+			case "isdir":
+				err := in.CheckArgN(action, 1, 1)
+				if err {
+					return true
+				}
+				err = in.CheckDtype(action, 0, STR)
+				if err {
+					return true
+				}
+				is_dir, go_err := isDirectory(in.NamedStr(action.First()))
+				if go_err != nil {
+					in.Error(action, go_err.Error(), "sys")
+					return true
+				}
+				in.Save(action.Target, is_dir)
 			case "ternary":
 				err := in.CheckArgN(action, 3, 3)
 				if err {
@@ -3506,9 +3540,35 @@ func (in *Interpreter) DeepAssign(receiver any, item any, inds []any) error {
 				if i < 0 || i >= len(rec.Ids) {
 					return fmt.Errorf("impossible index: %d for list of length %d", i, len(rec.Ids))
 				}
-				sublist := in.GetAnyRef(rec.Ids[i]).(bytecode.List)
+				if in.V.Slots[rec.Ids[i].Addr].Type == LIST {
+					sublist := in.GetAnyRef(rec.Ids[i]).(bytecode.List)
+					return in.DeepAssign(&sublist, item, inds[1:])
+				}
+				subpair := in.GetAnyRef(rec.Ids[i]).(bytecode.Pair)
+				return in.DeepAssign(&subpair, item, inds[1:])
+			}
+		}
+	case *bytecode.Pair:
+		if len(inds) == 1 {
+			mainkey := PairKey(in, inds[0])
+			if _, ok := rec.Ids[mainkey]; ok {
+				rec.Ids[mainkey] = in.GetRef(item)
+			} else {
+				PairAppend(rec, in, item, inds[0])
+			}
+		} else {
+			mainkey := PairKey(in, inds[0])
+			if _, ok := rec.Ids[mainkey]; ok {
+				rec.Ids[mainkey] = in.GetRef(item)
+			} else {
+				PairAppend(rec, in, item, inds[0])
+			}
+			if in.V.Slots[rec.Ids[mainkey].Addr].Type == LIST {
+				sublist := in.GetAnyRef(rec.Ids[mainkey]).(bytecode.List)
 				return in.DeepAssign(&sublist, item, inds[1:])
 			}
+			subpair := in.GetAnyRef(rec.Ids[mainkey]).(bytecode.Pair)
+			return in.DeepAssign(&subpair, item, inds[1:])
 		}
 	default:
 		types := map[byte]string{NOTH: "noth", INT: "int", FLOAT: "float", BYTE: "byte", STR: "str", FUNC: "func", SPAN: "span", ID: "id", LIST: "list", BOOL: "bool", PAIR: "pair", ARR: "arr"}
@@ -3879,4 +3939,16 @@ func (in *Interpreter) CopyListDeep(l bytecode.List, og *Interpreter) bytecode.L
 		nl.Ids = append(nl.Ids, ptr)
 	}
 	return nl
+}
+
+// isDirectory checks if the given path refers to a directory.
+func isDirectory(path string) (bool, error) {
+	fileInfo, err := os.Stat(path)
+	if err != nil {
+		// If the file/directory does not exist, os.Stat returns an error.
+		// You might want to handle os.IsNotExist(err) specifically if
+		// you need to distinguish between "not found" and other errors.
+		return false, err
+	}
+	return fileInfo.IsDir(), nil
 }
