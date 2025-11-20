@@ -435,7 +435,7 @@ func NewInterId(code, file string, parent *Interpreter) *Interpreter {
 }
 
 func (in *Interpreter) EqualizeTypes(v1, v2 string) (string, string) { // returns tempvar names
-	t1, t2 := in.V.Slots[in.V.Names[v1]].Type, in.V.Slots[in.V.Names[v2]].Type
+	t1, t2 := in.Type(v1), in.Type(v2)
 	if t1 == t2 {
 		return v1, v2
 	}
@@ -2721,6 +2721,37 @@ func (in *Interpreter) Run(node_name string) bool {
 					return true
 				}
 				in.Save(action.Target, is_dir)
+			case "abs":
+				err := in.CheckArgN(action, 1, 1)
+				if err {
+					return true
+				}
+				err = in.CheckDtype(action, 0, STR, INT, FLOAT)
+				if err {
+					return true
+				}
+				if in.Type(action.First()) == STR {
+					path := in.NamedStr(action.First())
+					if filepath.IsAbs(path) {
+						in.Save(action.Target, path)
+					} else {
+						path_abs, go_err := filepath.Abs(path)
+						if go_err != nil {
+							in.Error(action, go_err.Error(), "sys")
+							return true
+						}
+						in.Save(action.Target, path_abs)
+					}
+				} else {
+					switch in.Type(action.First()) {
+					case INT:
+						i := in.NamedInt(action.First())
+						in.Save(action.Target, i.Abs(i))
+					case FLOAT:
+						i := in.NamedFloat(action.First())
+						in.Save(action.Target, i.Abs(i))
+					}
+				}
 			case "ternary":
 				err := in.CheckArgN(action, 3, 3)
 				if err {
@@ -3455,12 +3486,14 @@ func (in *Interpreter) Run(node_name string) bool {
 						}
 					}
 				}
+			case "check_type":
+				// dtype := map[byte]string{NOTH: "noth", INT: "int", FLOAT: "float", BYTE: "byte", STR: "str", FUNC: "func", SPAN: "span", ID: "id", LIST: "list", BOOL: "bool", PAIR: "pair", ARR: "arr"}[in.Type(action.First())]
 			case "type":
 				err := in.CheckArgN(action, 1, 1)
 				if err {
 					return err
 				}
-				in.Save(action.Target, map[byte]string{NOTH: "noth", INT: "int", FLOAT: "float", BYTE: "byte", STR: "str", FUNC: "func", SPAN: "span", ID: "id", LIST: "list", BOOL: "bool", PAIR: "pair", ARR: "arr"}[in.V.Slots[in.V.Names[string(action.Variables[0])]].Type])
+				in.Save(action.Target, map[byte]string{NOTH: "noth", INT: "int", FLOAT: "float", BYTE: "byte", STR: "str", FUNC: "func", SPAN: "span", ID: "id", LIST: "list", BOOL: "bool", PAIR: "pair", ARR: "arr"}[in.Type(action.First())])
 			default:
 				if fn.Node != "" {
 					// user functions start
@@ -3951,4 +3984,41 @@ func isDirectory(path string) (bool, error) {
 		return false, err
 	}
 	return fileInfo.IsDir(), nil
+}
+
+func (in *Interpreter) HeaderFunc(signature string) {
+	// pass a proper signature and get a complete Minimum function
+	signature = strings.ReplaceAll(signature, " ", "")
+	splitted := strings.Split(signature, ":")
+	fn_name := splitted[0]
+	rest := splitted[1]
+	rest = rest[1 : len(rest)-1]
+	allowed_inputs := strings.Split(rest, ")(")
+	for _, allowed_input := range allowed_inputs {
+		input_length := len(strings.Split(allowed_input, ","))
+		fn_name_args := "_fn_" + fn_name + strconv.Itoa(input_length)
+		header := "func " + fn_name_args + " "
+		in_vars := []bytecode.Variable{}
+		for n := range input_length {
+			header += "i" + strconv.Itoa(n) + ", "
+			in_vars = append(in_vars, bytecode.Variable("i"+strconv.Itoa(n)))
+		}
+		header += ":"
+		body := []string{}
+		for ind, dtype := range strings.Split(allowed_input, ",") {
+			dtypes := strings.Split(dtype, "|")
+			for n := range dtypes {
+				dtypes[n] = "\"" + dtypes[n] + "\""
+			}
+			if strings.Contains(dtype, "any") {
+				continue
+			}
+			statement := fmt.Sprintf(" !check_type i%d, %s", ind, strings.Join(dtypes, ", "))
+			body = append(body, statement)
+		}
+		fn_full := strings.Join(append([]string{header}, body...), "\n")
+		in.Compile(fn_full, ".")
+		last_node := fmt.Sprintf("_node_%d", bytecode.NodeN-1)
+		in.Save(fn_name_args, &bytecode.Function{fn_name, last_node, in_vars, last_node})
+	}
 }

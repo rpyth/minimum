@@ -423,6 +423,18 @@ func GetOp(tokens []Token) int {
 	return -1
 }
 
+func FixMinusPrefix(tokens *[]Token) {
+	if len(*tokens) > 0 {
+		if (*tokens)[0].Type == "MINUS" || (*tokens)[0].Type == "PLUS" {
+			/*
+				*tokens = (*tokens)[1:]
+				(*tokens)[0].Value = "-" + (*tokens)[0].Value
+			*/
+			(*tokens) = append([]Token{{"CONST", "0"}}, (*tokens)...)
+		}
+	}
+}
+
 func TempName() string {
 	name := fmt.Sprintf("_temp_%d", TempN)
 	TempN++
@@ -636,6 +648,7 @@ func ModifierModifier(tokens []Token, ops []string) []Token {
 }
 
 func GetActs(tokens []Token, sl *SourceLine) []Action {
+	FixMinusPrefix(&tokens)
 	var actions []Action
 	ops := []string{"DOT", "SUB", "AND", "OR", "NOT", "PLUS", "MINUS", "MUL", "DIV", "DDIV", "MOD", "POW", "ISEQ", "NISEQ", "LESS", "GREAT"}
 	action_map := map[string]string{"DOT": ".", "SUB": "'", "AND": "and", "OR": "or", "NOT": "not", "ISEQ": "==", "NISEQ": "!=", "LESS": "<", "GREAT": ">", "PLUS": "+", "MINUS": "-", "MUL": "*", "DIV": "/", "DDIV": "//", "MOD": "%", "POW": "^"}
@@ -1312,7 +1325,7 @@ type Function struct {
 }
 
 func GenerateFuns() []Function {
-	strs := []string{"print", "out", "where", "len", "read", "write", "isdir", "exit", "type", "convert", "list", "array", "pair", "append", "system", "source", "run", "sort", "id", "ternary", "rand", "input", "glob", "env", "range", "fmt", "chdir", "split", "join", "to_upper", "to_lower", "cp", "mv", "rm", "pop", "itc", "cti", "has", "index", "replace", "re_match", "re_find", "rget", "rpost", "arrm", "value", "sub"}
+	strs := []string{"print", "out", "where", "len", "read", "write", "isdir", "abs", "check_type", "exit", "type", "convert", "list", "array", "pair", "append", "system", "source", "run", "sort", "id", "ternary", "rand", "input", "glob", "env", "range", "fmt", "chdir", "split", "join", "to_upper", "to_lower", "cp", "mv", "rm", "pop", "itc", "cti", "has", "index", "replace", "re_match", "re_find", "rget", "rpost", "arrm", "value", "sub"}
 	fs := []Function{}
 	for _, str := range strs {
 		fs = append(fs, Function{Name: str})
