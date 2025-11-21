@@ -1771,7 +1771,12 @@ func (in *Interpreter) RunSort(ftype string, sl *bytecode.SourceLine) bool {
 
 // MAIN FUNCTION START
 func (in *Interpreter) Run(node_name string) bool {
-	actions := in.Code[node_name]
+	actions, ok := in.Code[node_name]
+	if !ok && strings.HasPrefix(node_name, "action") {
+		a := bytecode.Action{}
+		a.Parse(node_name)
+		actions = append(actions, a)
+	}
 	focus := 0
 	for focus < len(actions) && !in.halt {
 		action := actions[focus]
@@ -2577,6 +2582,20 @@ func (in *Interpreter) Run(node_name string) bool {
 				in.Save(string(action.Variables[1]), p)
 			}
 			in.IgnoreErr = false
+		case "except":
+			e := in.CheckArgN(action, 2, 2)
+			if e {
+				return e
+			}
+			e = in.CheckDtype(action, 0, STR)
+			if e {
+				return e
+			}
+			e = in.CheckDtype(action, 1, STR)
+			if e {
+				return e
+			}
+			in.Error(action, in.NamedStr(action.First()), in.NamedStr(action.Second()))
 		case "$":
 			text_command := strings.TrimSpace(strings.SplitN(action.Source.Source, "$", 2)[1])
 			arguments := in.Parse(text_command)
@@ -3060,6 +3079,62 @@ func (in *Interpreter) Run(node_name string) bool {
 						}
 						in.Save(action.Target, combined_second)
 					} else if fn.Node == "" {
+						mask := bytecode.List{}
+						for ptr := 0; ptr < len(in.NamedList(action.First()).Ids); ptr++ {
+							// user functions start
+							f_in := Interpreter{V: &Vars{
+								Names: make(map[string]int),
+							}}
+							f_in.Id = rand.Uint64()
+							f_in.Copy(in)
+							f_in.Save("_item_", in.GetAnyRef(in.NamedList(action.First()).Ids[ptr]))
+							action2 := bytecode.Action{}
+							action2.Type = action.Second()
+							action2.Variables = []bytecode.Variable{("_item_")}
+							action2.Target = "_return_"
+							err := f_in.Run(action2.String())
+							in.ErrSource = f_in.ErrSource
+							if err {
+								return err
+							}
+							_, ok := f_in.V.Names["_return_"]
+							if !ok {
+								f_in.Nothing("_return_")
+							}
+							if f_in.V.Slots[f_in.V.Names["_return_"]].Type == LIST {
+								l := in.CopyList("_return_", &f_in)
+								//in.Save(action.Target, l)
+								ListAppend(&mask, in, l)
+							} else if f_in.V.Slots[f_in.V.Names["_return_"]].Type == PAIR {
+								l := in.CopyPair("_return_", &f_in)
+								//in.Save(action.Target, l)
+								ListAppend(&mask, in, l)
+							} else {
+								//in.Save(action.Target, f_in.GetAny("_return_"))
+								ListAppend(&mask, in, f_in.GetAny("_return_"))
+							}
+							f_in.Destroy()
+							// user functions end
+						}
+						combined := bytecode.List{}
+						for n := range mask.Ids {
+							double := bytecode.List{}
+							ListAppend(&double, in, in.GetAnyRef(mask.Ids[n]))
+							ListAppend(&double, in, in.GetAnyRef(in.NamedList(action.First()).Ids[n]))
+							ListAppend(&combined, in, double)
+						}
+						combined_sorted, go_err := in.SortList(combined)
+						if go_err != nil {
+							in.Error(action, go_err.Error(), "value")
+							return true
+						}
+						combined_second := bytecode.List{}
+						for n := range combined_sorted.Ids {
+							two := in.GetAnyRef(combined_sorted.Ids[n]).(bytecode.List)
+							ListAppend(&combined_second, in, in.GetAnyRef(two.Ids[1]))
+						}
+						in.Save(action.Target, combined_second)
+					} else if fn.Node == "" {
 						// this entire block is cope for the fact that built-in functions are not really the same as user ones
 						node_name_sort := fmt.Sprintf("_runner_%x", rand.Int64())
 						target_sort := fmt.Sprintf("_targ_%x", rand.Int64())
@@ -3179,7 +3254,7 @@ func (in *Interpreter) Run(node_name string) bool {
 				case "os":
 					in.Save(actions[focus].Target, runtime.GOOS)
 				case "version":
-					in.Save(actions[focus].Target, "4.3.0")
+					in.Save(actions[focus].Target, "4.3.1")
 				case "args":
 					l := bytecode.List{}
 					for _, arg := range os.Args {

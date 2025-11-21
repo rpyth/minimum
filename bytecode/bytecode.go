@@ -377,6 +377,24 @@ func (a *Action) Third() string {
 	return string(a.Variables[2])
 }
 
+func (a *Action) String() string {
+	inputs := []string{}
+	for _, v := range a.Variables {
+		inputs = append(inputs, string(v))
+	}
+	return fmt.Sprintf("action:%s,%s,%s", a.Target, a.Type, strings.Join(inputs, ","))
+}
+
+func (a *Action) Parse(s string) {
+	splitted := strings.Split(s[len("action:"):], ",")
+	a.Target = splitted[0]
+	a.Type = splitted[1]
+	a.Variables = []Variable{}
+	for _, vs := range splitted[2:] {
+		a.Variables = append(a.Variables, Variable(vs))
+	}
+}
+
 var TempN int
 
 func HasAct(tokens []Token) int {
@@ -1317,6 +1335,19 @@ func GetCode(source string) map[string][]Action {
 	return compiled
 }
 
+func GetLayout(signature string) *regexp.Regexp {
+	// accepts a regex template that checks number and type of input
+	key_any := "(int|float|byte|str|bool|list|arr|span|list|arr|pair|id|func)"
+	signature = strings.ReplaceAll(signature, "any", key_any)
+	key_number := "(int|float|byte)"
+	signature = strings.ReplaceAll(signature, "number", key_number)
+	return regexp.MustCompile(signature)
+}
+
+type FuncInfo struct {
+	Layout *regexp.Regexp
+	Help   string
+}
 type Function struct {
 	Name   string
 	Target string
@@ -1325,10 +1356,77 @@ type Function struct {
 }
 
 func GenerateFuns() []Function {
-	strs := []string{"print", "out", "where", "len", "read", "write", "isdir", "abs", "check_type", "exit", "type", "convert", "list", "array", "pair", "append", "system", "source", "run", "sort", "id", "ternary", "rand", "input", "glob", "env", "range", "fmt", "chdir", "split", "join", "to_upper", "to_lower", "cp", "mv", "rm", "pop", "itc", "cti", "has", "index", "replace", "re_match", "re_find", "rget", "rpost", "arrm", "value", "sub"}
+	strs := []string{"print", "out", "where", "len", "except", "read", "write", "isdir", "abs", "check_type", "exit", "type", "convert", "list", "array", "pair", "append", "system", "source", "run", "sort", "id", "ternary", "rand", "input", "glob", "env", "range", "fmt", "chdir", "split", "join", "to_upper", "to_lower", "cp", "mv", "rm", "pop", "itc", "cti", "has", "index", "replace", "re_match", "re_find", "rget", "rpost", "arrm", "value", "sub"}
 	fs := []Function{}
 	for _, str := range strs {
 		fs = append(fs, Function{Name: str})
+	}
+	return fs
+}
+
+func GenerateFunsFull() []Function {
+	strs := []string{"print: any+",
+		"out: any+",
+		"where: (list|str),",
+		"len",
+		"read",
+		"write",
+		"isdir",
+		"abs",
+		"check_type",
+		"exit",
+		"type",
+		"convert",
+		"list",
+		"array",
+		"pair",
+		"append",
+		"system",
+		"source",
+		"run",
+		"sort",
+		"id",
+		"ternary",
+		"rand",
+		"input",
+		"glob",
+		"env",
+		"range",
+		"fmt",
+		"chdir",
+		"split",
+		"join",
+		"to_upper",
+		"to_lower",
+		"cp",
+		"mv",
+		"rm",
+		"pop",
+		"itc",
+		"cti",
+		"has",
+		"index",
+		"replace",
+		"re_match",
+		"re_find",
+		"rget",
+		"rpost",
+		"arrm",
+		"value",
+		"sub"}
+	fs := []Function{}
+	for _, str := range strs {
+		splitted := strings.SplitN(str, ":", 3)
+		if len(splitted) < 3 {
+			splitted = append(splitted, "")
+		}
+		for n := range splitted {
+			splitted[n] = strings.TrimSpace(splitted[n])
+		}
+		name, args, desc := splitted[0], splitted[1], splitted[2]
+		info := FuncInfo{GetLayout(args), desc}
+		println(info.Help)
+		fs = append(fs, Function{Name: name})
 	}
 	return fs
 }
