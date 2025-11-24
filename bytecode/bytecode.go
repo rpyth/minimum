@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"math/big"
 	"regexp"
+	"strconv"
 	"strings"
 	"unicode/utf8"
 )
@@ -382,10 +383,15 @@ func (a *Action) String() string {
 	for _, v := range a.Variables {
 		inputs = append(inputs, string(v))
 	}
-	return fmt.Sprintf("action:%s,%s,%s", a.Target, a.Type, strings.Join(inputs, ","))
+	return fmt.Sprintf("action:%s,%s,%s;%d,%s", a.Target, a.Type, strings.Join(inputs, ","), a.Source.N, a.Source.Source)
 }
 
 func (a *Action) Parse(s string) {
+	var s_source string
+	s, s_source = strings.SplitN(s, ";", 2)[0], strings.SplitN(s, ";", 2)[1]
+	n_source, _ := strconv.Atoi(strings.SplitN(s_source, ",", 2)[0])
+	str_source := strings.SplitN(s_source, ",", 2)[1]
+	sl := SourceLine{str_source, n_source}
 	splitted := strings.Split(s[len("action:"):], ",")
 	a.Target = splitted[0]
 	a.Type = splitted[1]
@@ -393,6 +399,7 @@ func (a *Action) Parse(s string) {
 	for _, vs := range splitted[2:] {
 		a.Variables = append(a.Variables, Variable(vs))
 	}
+	a.Source = &sl
 }
 
 var TempN int
@@ -748,6 +755,27 @@ func GetActs(tokens []Token, sl *SourceLine) []Action {
 			actions = append(actions, actlet...)
 			actions = append(actions, Action{tokens[len(tokens)-1].Value, "repeat", []Variable{Variable(t)}, sl})
 			tokens = []Token{{"WORD", t}}
+		case len(tokens) > 1 && tokens[0].Type == "WORD" && tokens[0].Value == "process" && tokens[len(tokens)-1].Type == "LINK" && tokens[len(tokens)-2].Type == "COL":
+			args := CommaArgs(tokens[1 : len(tokens)-2])
+			//arg := args[0]
+			var arg []Token
+			for n, alet := range args {
+				if len(alet) == 3 && alet[1].Type == "R_ARR" {
+					arg = alet
+					args = append(args[:n], args[n+1:]...)
+					break
+				}
+			}
+			frozen := []Variable{}
+			for _, a := range args {
+				frozen = append(frozen, Variable(a[0].Value))
+			}
+			ind := Index(arg, Token{"R_ARR", ""})
+			left, right := arg[:ind], arg[ind+1:]
+			targ := right[0].Value
+			targ_node := tokens[len(tokens)-1].Value
+			actions = append(actions, Action{targ_node, "process", append([]Variable{Variable(left[0].Value), Variable(targ)}, frozen...), sl})
+			tokens = []Token{{"WORD", targ}}
 		case len(tokens) > 1 && tokens[0].Type == "WORD" && tokens[0].Value == "error" && tokens[len(tokens)-1].Type == "LINK" && tokens[len(tokens)-2].Type == "COL":
 			args := CommaArgs(tokens[1 : len(tokens)-2])
 			target := tokens[len(tokens)-1].Value
@@ -1356,7 +1384,7 @@ type Function struct {
 }
 
 func GenerateFuns() []Function {
-	strs := []string{"print", "out", "where", "len", "except", "read", "write", "isdir", "abs", "check_type", "exit", "type", "convert", "list", "array", "pair", "append", "system", "source", "run", "sort", "id", "ternary", "rand", "input", "glob", "env", "range", "fmt", "chdir", "split", "join", "to_upper", "to_lower", "cp", "mv", "rm", "pop", "itc", "cti", "has", "index", "replace", "re_match", "re_find", "rget", "rpost", "arrm", "value", "sub"}
+	strs := []string{"print", "out", "where", "len", "stats", "except", "sleep", "read", "write", "isdir", "abs", "lower", "upper", "map", "check_type", "exit", "type", "convert", "list", "array", "pair", "append", "system", "source", "run", "sort", "id", "ternary", "rand", "input", "glob", "env", "range", "fmt", "chdir", "split", "join", "to_upper", "to_lower", "cp", "mv", "rm", "pop", "itc", "cti", "has", "index", "replace", "re_match", "re_find", "rget", "rpost", "arrm", "value", "sub"}
 	fs := []Function{}
 	for _, str := range strs {
 		fs = append(fs, Function{Name: str})

@@ -16,6 +16,7 @@ import (
 	"runtime"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/chzyer/readline"
 )
@@ -76,6 +77,41 @@ type Interpreter struct {
 	IgnoreErr bool
 	ErrSource *bytecode.SourceLine
 	Id        uint64
+	Processes []*ChildProcess
+}
+
+type ChildProcess struct {
+	Interp     *Interpreter
+	Done       chan struct{} // signals completion
+	ResultId   uint64        // ID of produced result (the “item”)
+	ResultName string
+	TargetList string // variable name in parent to append into
+}
+
+func (in *Interpreter) SpawnProcess(node string, targetList, childItem string, copies []string) {
+	child := &Interpreter{V: &Vars{
+		Names: make(map[string]int),
+	}}
+	child.Id = rand.Uint64()
+	child.Copy(in)
+	for _, c := range copies {
+		child.Save(c, in.GetAny(c))
+	}
+
+	proc := &ChildProcess{
+		Interp:     child,
+		Done:       make(chan struct{}),
+		TargetList: targetList,
+		ResultName: childItem,
+	}
+
+	in.Processes = append(in.Processes, proc)
+
+	// run concurrently
+	go func() {
+		child.Run(node)
+		close(proc.Done)
+	}()
 }
 
 func TypeToByte(a any) byte {
@@ -133,6 +169,8 @@ func (in *Interpreter) Save(name string, v any) {
 				in.V.Funcs[in.V.Slots[old_id].Index] = v.(*bytecode.Function)
 			case NOTH:
 				in.Nothing(name)
+			case PAIR:
+				in.V.Pairs[in.V.Slots[old_id].Index] = v.(bytecode.Pair)
 			}
 			return
 		}
@@ -335,8 +373,8 @@ func (in *Interpreter) GetAny(var_name string) any {
 }
 
 func (in *Interpreter) GetAnyRef(ref *bytecode.MinPtr) any {
-	for in.Id != ref.Id { // id test
-		in = in.Parent
+	if in.Id != ref.Id { // id test
+		return in.Parent.GetAnyRef(ref)
 	}
 	ind := in.V.Slots[ref.Addr].Index
 	switch in.V.Slots[ref.Addr].Type {
@@ -956,7 +994,7 @@ func StartFull(code, file string) {
 	in.Run(fmt.Sprintf("_node_%d", bytecode.NodeN-1))
 }
 
-var error_type, error_message string
+var error_type, error_message, error_action string
 
 func (in *Interpreter) Error(act bytecode.Action, message, etype string) {
 	// zero_division
@@ -974,6 +1012,7 @@ func (in *Interpreter) Error(act bytecode.Action, message, etype string) {
 	in.ErrSource = act.Source
 	error_type = etype
 	error_message = message
+	error_action = act.Type
 }
 
 func (in *Interpreter) CheckArgN(action bytecode.Action, minimal, maximal int) bool {
@@ -1006,7 +1045,7 @@ func (in *Interpreter) CheckDtype(action bytecode.Action, index int, dtypes ...b
 	found := false
 	for _, dtype := range dtypes {
 		// in.V.Slots[in.V.Names[string(action.Variables[index])]].Type
-		if in.V.Slots[in.V.Names[string(action.Variables[index])]].Type == dtype {
+		if in.Type(string(action.Variables[index])) == dtype {
 			found = true
 			break
 		}
@@ -1297,12 +1336,52 @@ func (in *Interpreter) NewSpan(length int, dtype byte) bytecode.Span {
 			for range length {
 				in.V.Ints = append(in.V.Ints, big.NewInt(0))
 			}
+		case FLOAT:
+			s.Start = uint64(len(in.V.Floats))
+			s.Length = uint64(length)
+			for range length {
+				in.V.Floats = append(in.V.Floats, big.NewFloat(0))
+			}
+		case BOOL:
+			s.Start = uint64(len(in.V.Bools))
+			s.Length = uint64(length)
+			for range length {
+				in.V.Bools = append(in.V.Bools, false)
+			}
 		case BYTE:
 			s.Start = uint64(len(in.V.Bytes))
 			s.Length = uint64(length)
 			for range length {
 				in.V.Bytes = append(in.V.Bytes, byte(0))
 			}
+		case FUNC:
+			s.Start = uint64(len(in.V.Funcs))
+			s.Length = uint64(length)
+			for range length {
+				in.V.Funcs = append(in.V.Funcs, &bytecode.Function{})
+			}
+		case LIST:
+			s.Start = uint64(len(in.V.Lists))
+			s.Length = uint64(length)
+			for range length {
+				in.V.Lists = append(in.V.Lists, bytecode.List{})
+			}
+		case SPAN:
+			s.Start = uint64(len(in.V.Spans))
+			s.Length = uint64(length)
+			for range length {
+				in.V.Spans = append(in.V.Spans, in.NewSpan(0, NOTH))
+			}
+		case PAIR:
+			s.Start = uint64(len(in.V.Pairs))
+			s.Length = uint64(length)
+			for range length {
+				p := bytecode.Pair{make(map[string]*bytecode.MinPtr)}
+				in.V.Pairs = append(in.V.Pairs, p)
+			}
+		case NOTH:
+			s.Start = uint64(0)
+			s.Length = uint64(0)
 		default:
 			panic("unsupported Span content")
 		}
@@ -1757,7 +1836,7 @@ func (in *Interpreter) Fmt(str string) string {
 }
 
 var RL *readline.Instance
-var protected_actions = []string{"for", "const", "pool", "error", "func"}
+var protected_actions = []string{"for", "const", "pool", "error", "func", "process"}
 
 func (in *Interpreter) RunSort(ftype string, sl *bytecode.SourceLine) bool {
 	node_name := fmt.Sprintf("_runner_%x", rand.Int64())
@@ -1767,6 +1846,32 @@ func (in *Interpreter) RunSort(ftype string, sl *bytecode.SourceLine) bool {
 	boolean := in.Run(node_name)
 	delete(in.Code, node_name)
 	return boolean
+}
+
+func (in *Interpreter) checkChildProcesses() {
+	i := 0
+	for i < len(in.Processes) {
+		proc := in.Processes[i]
+
+		select {
+		case <-proc.Done:
+			// child finished — integrate result
+			in.integrateChildResult(proc)
+			// remove from slice
+			in.Processes = append(in.Processes[:i], in.Processes[i+1:]...)
+		default:
+			i++
+		}
+	}
+}
+
+func (in *Interpreter) integrateChildResult(proc *ChildProcess) {
+	// append result into parent's list
+	lst := in.NamedList(proc.TargetList)
+	lst = in.CopyList(proc.TargetList, proc.Interp)
+	ref := in.SaveRefNew(proc.Interp.GetAny(proc.ResultName))
+	lst.Ids = append(lst.Ids, ref)
+	in.Save(proc.TargetList, lst)
 }
 
 // MAIN FUNCTION START
@@ -1779,6 +1884,7 @@ func (in *Interpreter) Run(node_name string) bool {
 	}
 	focus := 0
 	for focus < len(actions) && !in.halt {
+		in.checkChildProcesses()
 		action := actions[focus]
 		for _, vv := range action.Variables {
 			if _, ok := in.V.Names[string(vv)]; !ok && !bytecode.Has(protected_actions, action.Type) {
@@ -1837,9 +1943,22 @@ func (in *Interpreter) Run(node_name string) bool {
 			}
 		case "'", "''":
 			switch in.Type(action.First()) {
+			case STR:
+				str := in.NamedStr(string(action.Variables[0]))
+				ind := in.NamedInt(string(action.Variables[1])).Int64()
+				if ind < 0 {
+					ind += int64(len([]rune(str)))
+				}
+				if action.Type == "'" {
+					in.Save(action.Target, string([]rune(str)[ind]))
+				}
 			case PAIR:
 				p := in.NamedPair(string(action.Variables[0]))
 				ind := PairKey(in, in.GetAny(string(action.Variables[1])))
+				if _, ok := p.Ids[ind]; !ok {
+					in.Error(action, fmt.Sprintf("invalid pairing key: %s", strings.SplitN(ind, ":", 2)[1]), "index")
+					return true
+				}
 				if action.Type == "'" {
 					in.Save(action.Target, in.GetAnyRef(p.Ids[ind]))
 				} else {
@@ -2557,6 +2676,14 @@ func (in *Interpreter) Run(node_name string) bool {
 			for _, span_name := range sources {
 				in.RemoveName(span_name)
 			}
+		case "process":
+			node := action.Target
+			in.Save(action.Second(), bytecode.List{})
+			frozen := []string{}
+			for _, v := range action.Variables[2:] {
+				frozen = append(frozen, string(v))
+			}
+			in.SpawnProcess(node, action.Second(), action.First(), frozen)
 		case "error":
 			e := in.CheckArgN(action, 0, 2)
 			if e {
@@ -2574,7 +2701,7 @@ func (in *Interpreter) Run(node_name string) bool {
 				p.Ids = make(map[string]*bytecode.MinPtr)
 				PairAppend(&p, in, big.NewInt(int64(in.ErrSource.N)+1), "line")
 				PairAppend(&p, in, in.ErrSource.Source, "source")
-				PairAppend(&p, in, action.Type, "action")
+				PairAppend(&p, in, error_type, "action")
 				PairAppend(&p, in, error_type, "type")
 				PairAppend(&p, in, error_message, "message")
 				error_type = ""
@@ -2792,6 +2919,88 @@ func (in *Interpreter) Run(node_name string) bool {
 				}
 				str := in.Fmt(in.NamedStr(string(action.Variables[0])))
 				in.Save(action.Target, str)
+			case "lower":
+				err := in.CheckArgN(action, 1, 1)
+				if err {
+					return true
+				}
+				err = in.CheckDtype(action, 0, STR)
+				if err {
+					return true
+				}
+				in.Save(action.Target, strings.ToLower(in.NamedStr(action.First())))
+			case "upper":
+				err := in.CheckArgN(action, 1, 1)
+				if err {
+					return true
+				}
+				err = in.CheckDtype(action, 0, STR)
+				if err {
+					return true
+				}
+				in.Save(action.Target, strings.ToUpper(in.NamedStr(action.First())))
+			case "map":
+				err := in.CheckArgN(action, 2, 2)
+				if err {
+					return true
+				}
+				err = in.CheckDtype(action, 0, LIST)
+				if err {
+					return true
+				}
+				err = in.CheckDtype(action, 1, FUNC)
+				if err {
+					return true
+				}
+				l := in.NamedList(action.First())
+				l_out := bytecode.List{}
+				f_in := Interpreter{V: &Vars{
+					Names: make(map[string]int),
+				}}
+				f_in.Copy(in)
+				fn := in.NamedFunc(action.Second())
+				for _, ptr := range l.Ids {
+					a := in.GetAnyRef(ptr)
+					if fn.Node != "" {
+						f_in.Save(string(fn.Vars[0]), a)
+						min_err := f_in.Run(fn.Node)
+						if min_err {
+							return true
+						}
+						if _, ok := f_in.V.Names["_return_"]; ok {
+							ListAppend(&l_out, in, f_in.GetAny("_return_"))
+						} else {
+							in.Nothing("Nothing")
+							nptr := &bytecode.MinPtr{uint64(in.GetSlot("Nothing").Index), in.Id}
+							l_out.Ids = append(l_out.Ids, nptr)
+						}
+						f_in.Destroy()
+						f_in = Interpreter{V: &Vars{
+							Names: make(map[string]int),
+						}}
+						f_in.Copy(in)
+					} else {
+						f_in.Save("_item_", a)
+						act2 := bytecode.Action{}
+						act2.Source = action.Source
+						act2.Target = "_return_"
+						act2.Variables = []bytecode.Variable{("_item_")}
+						act2.Type = fn.Name
+						min_err := f_in.Run(act2.String())
+						if min_err {
+							return true
+						}
+						if _, ok := f_in.V.Names["_return_"]; ok {
+							ListAppend(&l_out, in, f_in.GetAny("_return_"))
+						} else {
+							in.Nothing("Nothing")
+							nptr := &bytecode.MinPtr{uint64(in.GetSlot("Nothing").Index), in.Id}
+							l_out.Ids = append(l_out.Ids, nptr)
+						}
+					}
+				}
+				in.Save(action.Target, l_out)
+				f_in.Destroy()
 			case "env":
 				err := in.CheckArgN(action, 1, 2)
 				if err {
@@ -2972,6 +3181,24 @@ func (in *Interpreter) Run(node_name string) bool {
 					s := in.NamedSpan(string(action.Variables[0]))
 					in.Save(action.Target, big.NewInt(int64(s.Length)))
 				}
+			case "sleep":
+				err := in.CheckArgN(action, 1, 1)
+				if err {
+					return err
+				}
+				err = in.CheckDtype(action, 0, INT, FLOAT, BYTE)
+				if err {
+					return err
+				}
+				switch in.Type(action.First()) {
+				case INT:
+					time.Sleep(time.Duration(in.NamedInt(action.First()).Int64()) * 1000 * time.Millisecond)
+				case FLOAT:
+					f, _ := in.NamedFloat(action.First()).Float64()
+					time.Sleep(time.Duration(int64(f*1000)) * time.Millisecond)
+				case BYTE:
+					time.Sleep(time.Duration(int64(in.NamedByte(action.First()))) * 1000 * time.Millisecond)
+				}
 			case "range":
 				i := in.NamedInt(string(action.Variables[0]))
 				s := in.NewSpan(int(i.Int64()), INT)
@@ -3092,6 +3319,7 @@ func (in *Interpreter) Run(node_name string) bool {
 							action2.Type = action.Second()
 							action2.Variables = []bytecode.Variable{("_item_")}
 							action2.Target = "_return_"
+							action2.Source = action.Source
 							err := f_in.Run(action2.String())
 							in.ErrSource = f_in.ErrSource
 							if err {
@@ -3392,6 +3620,27 @@ func (in *Interpreter) Run(node_name string) bool {
 					}
 				}
 				in.Save(action.Target, strings.Join(to_join, in.NamedStr(string(action.Variables[1]))))
+			case "stats":
+				err := in.CheckArgN(action, 1, 1)
+				if err {
+					return err
+				}
+				err = in.CheckDtype(action, 0, STR)
+				if err {
+					return err
+				}
+				info, go_err := os.Stat(in.NamedStr(action.First()))
+				if go_err != nil {
+					in.Error(action, go_err.Error(), "sys")
+					return true
+				}
+				p := bytecode.Pair{Ids: make(map[string]*bytecode.MinPtr)}
+				PairAppend(&p, in, info.Name(), "name")
+				PairAppend(&p, in, info.IsDir(), "is_dir")
+				PairAppend(&p, in, big.NewInt(info.Size()), "size")
+				PairAppend(&p, in, big.NewInt(info.ModTime().Unix()), "mod_time")
+				PairAppend(&p, in, info.ModTime().UTC().Format("2006/01/02 15:04:05"), "mod_date")
+				in.Save(action.Target, p)
 			case "to_upper":
 				if err := in.CheckArgN(action, 1, 1); err {
 					return err
@@ -3469,6 +3718,32 @@ func (in *Interpreter) Run(node_name string) bool {
 						in.Save(action.Target, new_span)
 						in.V.gcCycle = in.V.gcMax - 1 // make sure the GC actually works
 						// in.GC()                       // this one is here to prevent memory overfill
+					case FLOAT:
+						err := in.CheckDtype(action, 1, FLOAT)
+						if err {
+							return err
+						}
+						new_span := in.NewSpan(int(s.Length)+1, FLOAT) // bytecode.Span{INT, uint64(new_start), new_length}
+						for n := s.Start; n < s.Start+s.Length; n++ {
+							relative_n := n - s.Start
+							in.V.Floats[new_span.Start+relative_n].Set(in.V.Floats[n])
+						}
+						in.V.Floats[new_span.Start+new_span.Length-1].Set(in.NamedFloat(action.Second()))
+						in.Save(action.Target, new_span)
+						in.V.gcCycle = in.V.gcMax - 1
+					case BYTE:
+						err := in.CheckDtype(action, 1, BYTE)
+						if err {
+							return err
+						}
+						new_span := in.NewSpan(int(s.Length)+1, BYTE)
+						for n := s.Start; n < s.Start+s.Length; n++ {
+							relative_n := n - s.Start
+							in.V.Bytes[new_span.Start+relative_n] = in.V.Bytes[n]
+						}
+						in.V.Bytes[new_span.Start+new_span.Length-1] = in.NamedByte(action.Second())
+						in.Save(action.Target, new_span)
+						in.V.gcCycle = in.V.gcMax - 1
 					}
 				}
 			case "has":
@@ -3578,6 +3853,14 @@ func (in *Interpreter) Run(node_name string) bool {
 					f_in.Id = rand.Uint64()
 					f_in.Copy(in)
 					for n, fn_arg := range fn.Vars {
+						if n == len(fn.Vars)-1 && len(action.Variables) > len(fn.Vars) {
+							last := bytecode.List{}
+							for _, lastlet := range action.Variables[len(fn.Vars)-1:] {
+								ListAppend(&last, &f_in, in.GetAny(string(lastlet)))
+							}
+							f_in.Save(string(fn_arg), last)
+							continue
+						}
 						fn_arg_str := string(fn_arg)
 						if in.Type(string(action.Variables[n])) == PAIR {
 							p := f_in.CopyPair(string(action.Variables[n]), in)
@@ -3823,6 +4106,13 @@ func (in *Interpreter) Type(name string) byte {
 	return in.V.Slots[in.V.Names[name]].Type
 }
 
+func (in *Interpreter) TypeRef(ref *bytecode.MinPtr) byte {
+	if ref.Id != in.Id {
+		return in.Parent.TypeRef(ref)
+	}
+	return in.V.Slots[ref.Addr].Type
+}
+
 func (in *Interpreter) CompareName(n0, n1 string) bool {
 	if n0 == n1 || in.V.Names[n0] == in.V.Names[n1] {
 		return true
@@ -4009,6 +4299,27 @@ func (in *Interpreter) CopyList(vname string, og *Interpreter) bytecode.List {
 	lnew := bytecode.List{}
 	for _, id := range l.Ids {
 		a := og.GetAnyRef(id)
+		if og.TypeRef(id) == LIST {
+			a = in.CopyListRef(id, og)
+		} else if og.TypeRef(id) == PAIR {
+			a = in.CopyPairRef(id, og)
+		}
+		newid := in.SaveRefNew(a)
+		lnew.Ids = append(lnew.Ids, newid)
+	}
+	return lnew
+}
+
+func (in *Interpreter) CopyListRef(vname *bytecode.MinPtr, og *Interpreter) bytecode.List {
+	l := og.GetAnyRef(vname).(bytecode.List)
+	lnew := bytecode.List{}
+	for _, id := range l.Ids {
+		a := og.GetAnyRef(id)
+		if og.TypeRef(id) == LIST {
+			a = in.CopyListRef(id, og)
+		} else if og.TypeRef(id) == PAIR {
+			a = in.CopyPairRef(id, og)
+		}
 		newid := in.SaveRefNew(a)
 		lnew.Ids = append(lnew.Ids, newid)
 	}
@@ -4021,6 +4332,28 @@ func (in *Interpreter) CopyPair(vname string, og *Interpreter) bytecode.Pair {
 	lnew.Ids = make(map[string]*bytecode.MinPtr)
 	for key, id := range l.Ids {
 		a := og.GetAnyRef(id)
+		if og.TypeRef(id) == LIST {
+			a = in.CopyListRef(id, og)
+		} else if og.TypeRef(id) == PAIR {
+			a = in.CopyPairRef(id, og)
+		}
+		newid := in.SaveRefNew(a)
+		lnew.Ids[key] = newid
+	}
+	return lnew
+}
+
+func (in *Interpreter) CopyPairRef(vname *bytecode.MinPtr, og *Interpreter) bytecode.Pair {
+	l := og.GetAnyRef(vname).(bytecode.Pair)
+	lnew := bytecode.Pair{}
+	lnew.Ids = make(map[string]*bytecode.MinPtr)
+	for key, id := range l.Ids {
+		a := og.GetAnyRef(id)
+		if og.TypeRef(id) == LIST {
+			a = in.CopyListRef(id, og)
+		} else if og.TypeRef(id) == PAIR {
+			a = in.CopyPairRef(id, og)
+		}
 		newid := in.SaveRefNew(a)
 		lnew.Ids[key] = newid
 	}
