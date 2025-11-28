@@ -65,6 +65,21 @@ type Vars struct {
 	Pairs   []bytecode.Pair
 	gcCycle uint16
 	gcMax   uint16
+	gcSize  uint64
+}
+
+func (v *Vars) heapSize() int {
+	return len(v.Ints) +
+		len(v.Floats) +
+		len(v.Strs) +
+		len(v.Bools) +
+		len(v.Bytes) +
+		len(v.Funcs) +
+		len(v.Ids) +
+		len(v.Arrs) +
+		len(v.Spans) +
+		len(v.Lists) +
+		len(v.Pairs)
 }
 
 type Interpreter struct {
@@ -441,7 +456,8 @@ func NewInterpreter(code, file string) Interpreter {
 	for _, fn := range bytecode.GenerateFuns() {
 		in.Save(fn.Name, &fn)
 	}
-	in.V.gcMax = 100
+	in.V.gcMax = 10000
+	in.Nothing("Nothing") // create Nothing in top scope
 	return in
 }
 
@@ -707,14 +723,20 @@ func (in *Interpreter) GC() {
 // Garbage Collector Experimental
 func (in *Interpreter) GCE() {
 	in.V.gcCycle++
+	heap_size := in.V.heapSize()
 	if in.V.gcCycle >= in.V.gcMax {
 		in.V.gcCycle = 0
 	} else {
-		return
+		if float64(in.V.gcSize)*1.2 < float64(heap_size) {
+			in.V.gcCycle = 0
+		} else {
+			return
+		}
 	}
 	old := in.V
 	newVars := &Vars{
-		Names: make(map[string]int),
+		Names:  make(map[string]int),
+		gcSize: uint64(heap_size),
 	}
 
 	// Maps old slot indices to new ones per type
@@ -1111,29 +1133,30 @@ func ListAppend(l *bytecode.List, in *Interpreter, item any) {
 func ListString(l *bytecode.List, in *Interpreter) string {
 	elements := []string{}
 	for _, item_id := range l.Ids {
-		if item_id.Id != in.Id {
-			return ListString(l, in.Parent)
+		interp := in
+		for interp.Id != item_id.Id {
+			interp = interp.Parent
 		}
-		item := in.V.Slots[item_id.Addr].Index
-		switch in.V.Slots[item_id.Addr].Type {
+		item := interp.V.Slots[item_id.Addr].Index
+		switch in.TypeRef(item_id) {
 		case INT:
-			elements = append(elements, in.V.Ints[item].String())
+			elements = append(elements, interp.V.Ints[item].String())
 		case FLOAT:
-			elements = append(elements, in.V.Floats[item].String())
+			elements = append(elements, interp.V.Floats[item].String())
 		case BOOL:
-			elements = append(elements, ternary(in.V.Bools[item], "true", "false"))
+			elements = append(elements, ternary(interp.V.Bools[item], "true", "false"))
 		case BYTE:
-			elements = append(elements, fmt.Sprintf("b.%d", in.V.Bytes[item]))
+			elements = append(elements, fmt.Sprintf("b.%d", interp.V.Bytes[item]))
 		case STR:
-			elements = append(elements, "\""+in.V.Strs[item]+"\"")
+			elements = append(elements, "\""+interp.V.Strs[item]+"\"")
 		case FUNC:
-			elements = append(elements, "func."+in.V.Funcs[item].Name)
+			elements = append(elements, "func."+interp.V.Funcs[item].Name)
 		case LIST:
 			ll := in.V.Lists[item]
-			elements = append(elements, ListString(&ll, in))
+			elements = append(elements, ListString(&ll, interp))
 		case PAIR:
 			pp := in.V.Pairs[item]
-			elements = append(elements, PairString(&pp, in))
+			elements = append(elements, PairString(&pp, interp))
 		default:
 			elements = append(elements, "Nothing")
 		}
@@ -1850,7 +1873,7 @@ func (in *Interpreter) Fmt(str string) string {
 				text = fmt.Sprintf("%d", v)
 			case bool:
 				text = ternary(v, "true", "false")
-			case bytecode.Function:
+			case *bytecode.Function:
 				text = "func." + v.Name
 			case bytecode.List:
 				text = ListString(&v, in)
@@ -1882,7 +1905,7 @@ func (in *Interpreter) Fmt(str string) string {
 				text = fmt.Sprintf("%d", v)
 			case bool:
 				text = ternary(v, "true", "false")
-			case bytecode.Function:
+			case *bytecode.Function:
 				text = "func." + v.Name
 			case bytecode.List:
 				text = ListString(&v, in)
@@ -1963,6 +1986,9 @@ func (in *Interpreter) Run(node_name string) bool {
 				}
 			}
 		}
+		if action.Type != "++" && action.Type != "--" {
+			in.Nothing(action.Target)
+		} // TODO: check if creates bloat
 		switch action.Type {
 		case "const":
 			reg_int := regexp.MustCompile(`^-?[0-9]+$`)
@@ -3579,6 +3605,23 @@ func (in *Interpreter) Run(node_name string) bool {
 					in.Save(actions[focus].Target, wd)
 				case "file":
 					in.Save(action.Target, ternary(in.File != nil, *in.File, ""))
+				case "funcs":
+					fs := bytecode.List{}
+					interp := in
+					for addr, slot := range interp.V.Slots {
+						if slot.Type == FUNC {
+							fs.Ids = append(fs.Ids, &bytecode.MinPtr{Addr: uint64(addr), Id: interp.Id})
+						}
+					}
+					for interp.Parent != nil {
+						interp = interp.Parent
+						for addr, slot := range interp.V.Slots {
+							if slot.Type == FUNC {
+								fs.Ids = append(fs.Ids, &bytecode.MinPtr{Addr: uint64(addr), Id: interp.Id})
+							}
+						}
+					}
+					in.Save(action.Target, fs)
 				}
 			case "chdir":
 				err := in.CheckArgN(action, 1, 1)
@@ -3723,22 +3766,6 @@ func (in *Interpreter) Run(node_name string) bool {
 				PairAppend(&p, in, big.NewInt(info.ModTime().Unix()), "mod_time")
 				PairAppend(&p, in, info.ModTime().UTC().Format("2006/01/02 15:04:05"), "mod_date")
 				in.Save(action.Target, p)
-			case "to_upper":
-				if err := in.CheckArgN(action, 1, 1); err {
-					return err
-				}
-				if err := in.CheckDtype(action, 0, STR); err {
-					return err
-				}
-				in.Save(action.Target, strings.ToUpper(in.NamedStr(string(action.Variables[0]))))
-			case "to_lower":
-				if err := in.CheckArgN(action, 1, 1); err {
-					return err
-				}
-				if err := in.CheckDtype(action, 0, STR); err {
-					return err
-				}
-				in.Save(action.Target, strings.ToLower(in.NamedStr(string(action.Variables[0]))))
 			case "id":
 				err := in.CheckArgN(action, 1, 2)
 				if err {
@@ -3919,7 +3946,13 @@ func (in *Interpreter) Run(node_name string) bool {
 					}
 				}
 			case "check_type":
-				// dtype := map[byte]string{NOTH: "noth", INT: "int", FLOAT: "float", BYTE: "byte", STR: "str", FUNC: "func", SPAN: "span", ID: "id", LIST: "list", BOOL: "bool", PAIR: "pair", ARR: "arr"}[in.Type(action.First())]
+				dtypes_map := map[byte]string{NOTH: "noth", INT: "int", FLOAT: "float", BYTE: "byte", STR: "str", FUNC: "func", SPAN: "span", ID: "id", LIST: "list", BOOL: "bool", PAIR: "pair", ARR: "arr"}
+				type_byte := in.Type(action.First())
+				type_string := in.NamedStr(action.Second()) // TODO TYPECHECK
+				if dtypes_map[type_byte] != type_string {
+					in.Error(action, fmt.Sprintf("type mismatch: %s instead of %s", type_string, dtypes_map[type_byte]), "type")
+					return true
+				}
 			case "type":
 				err := in.CheckArgN(action, 1, 1)
 				if err {
@@ -4177,6 +4210,14 @@ func PoolWorkerNewLegacy(
 
 // UTIL FUNCTIONS
 func (in *Interpreter) Nothing(name string) {
+	interp := in
+	for interp.Parent != nil {
+		if slot_id, ok := interp.V.Names["Nothing"]; !ok {
+			interp = interp.Parent
+		} else if interp.V.Slots[slot_id].Type == NOTH {
+			return
+		}
+	}
 	in.Save(name, byte(0))
 	in.V.Slots[in.V.Names[name]].Type = NOTH
 }
