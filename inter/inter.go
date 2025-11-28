@@ -1389,6 +1389,69 @@ func (in *Interpreter) NewSpan(length int, dtype byte) bytecode.Span {
 	}
 }
 
+func (in *Interpreter) SpanSet(s *bytecode.Span, index int, item any) error {
+	types := map[byte]string{NOTH: "noth", INT: "int", FLOAT: "float", BYTE: "byte", STR: "str", FUNC: "func", SPAN: "span", ID: "id", LIST: "list", BOOL: "bool", PAIR: "pair", ARR: "arr"}
+	if index < 0 {
+		index += int(s.Length)
+	}
+	if index < 0 || index >= int(s.Length) {
+		return fmt.Errorf("impossible span index: %d", index)
+	}
+	switch v := item.(type) {
+	case *big.Int:
+		if s.Dtype == INT {
+			in.V.Ints[s.Start+uint64(index)] = v
+		} else {
+			return fmt.Errorf("cannot append item with type code %s to span with type code %s", types[INT], types[s.Dtype])
+		}
+	case *big.Float:
+		if s.Dtype == FLOAT {
+			in.V.Floats[s.Start+uint64(index)] = v
+		} else {
+			return fmt.Errorf("cannot append item with type code %s to span with type code %s!", types[FLOAT], types[s.Dtype])
+		}
+	case byte:
+		if s.Dtype == BYTE {
+			in.V.Bytes[s.Start+uint64(index)] = v
+		} else {
+			return fmt.Errorf("cannot append item with type code %s to span with type code %s!", types[BYTE], types[s.Dtype])
+		}
+	case bool:
+		if s.Dtype == BOOL {
+			in.V.Bools[s.Start+uint64(index)] = v
+		} else {
+			return fmt.Errorf("cannot append item with type code %s to span with type code %s!", types[BOOL], types[s.Dtype])
+		}
+	case bytecode.Span:
+		if s.Dtype == SPAN {
+			in.V.Spans[s.Start+uint64(index)] = v
+		} else {
+			return fmt.Errorf("cannot append item with type code %s to span with type code %s!", types[SPAN], types[s.Dtype])
+		}
+	case bytecode.List:
+		if s.Dtype == LIST {
+			in.V.Lists[s.Start+uint64(index)] = v
+		} else {
+			return fmt.Errorf("cannot append item with type code %s to span with type code %s!", types[LIST], types[s.Dtype])
+		}
+	case bytecode.Pair:
+		if s.Dtype == PAIR {
+			in.V.Pairs[s.Start+uint64(index)] = v
+		} else {
+			return fmt.Errorf("cannot append item with type code %s to span with type code %s!", types[PAIR], types[s.Dtype])
+		}
+	case *bytecode.Function:
+		if s.Dtype == FUNC {
+			in.V.Funcs[s.Start+uint64(index)] = v
+		} else {
+			return fmt.Errorf("cannot append item with type code %s to span with type code %s!", types[FUNC], types[s.Dtype])
+		}
+	default:
+		return fmt.Errorf("unsupported type!")
+	}
+	return nil
+}
+
 func (in *Interpreter) StringSpan(l bytecode.Span) string {
 	elements := []string{}
 	dstrings := map[byte]string{0: "noth", 1: "int", 2: "float", 3: "str", 4: "arr", 5: "list", 6: "pair", 7: "bool", 8: "byte", 9: "func", 10: "id", 11: "arrm"}
@@ -3208,6 +3271,25 @@ func (in *Interpreter) Run(node_name string) bool {
 					iterated = big.NewInt(iterated.Int64() + 1)
 				}
 				in.Save(action.Target, s)
+			case "span":
+				err := in.CheckDtype(action, 0, LIST)
+				if err {
+					return err
+				}
+				l := in.NamedList(action.First())
+				if len(l.Ids) == 0 {
+					in.Error(action, "cannot create a span with length 0", "index")
+					return true
+				}
+				s := in.NewSpan(len(l.Ids), in.TypeRef(l.Ids[0]))
+				for n, item := range l.Ids {
+					go_err := in.SpanSet(&s, n, in.GetAnyRef(item))
+					if go_err != nil {
+						in.Error(action, go_err.Error(), "index")
+						return true
+					}
+				}
+				in.Save(action.Target, s)
 			case "rand":
 				err := in.CheckArgN(action, 2, 2)
 				if err {
@@ -3482,7 +3564,7 @@ func (in *Interpreter) Run(node_name string) bool {
 				case "os":
 					in.Save(actions[focus].Target, runtime.GOOS)
 				case "version":
-					in.Save(actions[focus].Target, "4.3.1")
+					in.Save(actions[focus].Target, "4.3.2")
 				case "args":
 					l := bytecode.List{}
 					for _, arg := range os.Args {
@@ -4429,4 +4511,20 @@ func (in *Interpreter) HeaderFunc(signature string) {
 		last_node := fmt.Sprintf("_node_%d", bytecode.NodeN-1)
 		in.Save(fn_name_args, &bytecode.Function{fn_name, last_node, in_vars, last_node})
 	}
+}
+
+func ShowSource(source string) {
+	length := 0
+	lines := strings.Split(source, "\n")
+	for _, line := range lines {
+		if len([]rune(line)) > length {
+			length = len([]rune(line))
+		}
+	}
+	pad := ""
+	for range length {
+		pad += "_"
+	}
+	lines = append([]string{pad}, append(lines, pad)...)
+	fmt.Println(strings.Join(lines, "\n"))
 }

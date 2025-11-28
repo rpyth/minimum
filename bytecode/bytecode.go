@@ -1052,31 +1052,6 @@ func GetActs(tokens []Token, sl *SourceLine) []Action {
 			targ := TempName()
 			actions = append(actions, Action{targ, "return", vs, sl})
 			tokens = []Token{{"WORD", targ}} //append(tokens[:ind], []Token{{"WORD", targ}}...)
-		case HasAct(tokens) > -1:
-			ind := HasActLeft(tokens)
-			action := tokens[ind+1]
-			args := CommaArgs(tokens[ind+2:])
-			vs := []Variable{}
-			for _, arg := range args {
-				actionslet := GetActs(arg, sl)
-				var t Variable
-				if len(actionslet) > 0 {
-					t = Variable(actionslet[len(actionslet)-1].Target)
-				} else {
-					// TODO: add constant support
-					name := arg[0].Value
-					if arg[0].Type == "CONST" {
-						name = TempName()
-						actionslet = append(actionslet, Action{name, "const", []Variable{Variable(arg[0].Value)}, sl})
-					}
-					t = Variable(name)
-				}
-				vs = append(vs, t)
-				actions = append(actions, actionslet...)
-			}
-			targ := TempName()
-			actions = append(actions, Action{targ, action.Value, vs, sl})
-			tokens = append(tokens[:ind], []Token{{"WORD", targ}}...)
 		case len(tokens) == 2 && tokens[0].Type == "WORD" && (tokens[1].Type == "PP" || tokens[1].Type == "MM"):
 			t := tokens[0].Value
 			act := Action{t, ternary(tokens[1].Type == "PP", "++", "--"), []Variable{Variable(tokens[0].Value)}, sl}
@@ -1105,6 +1080,31 @@ func GetActs(tokens []Token, sl *SourceLine) []Action {
 			tokens = append(tokens[:ind-1], Token{"WORD", name})
 			tokens = append(tokens, tail...)
 			tokens = Unlink(tokens)
+		case HasAct(tokens) > -1:
+			ind := HasActLeft(tokens)
+			action := tokens[ind+1]
+			args := CommaArgs(tokens[ind+2:])
+			vs := []Variable{}
+			for _, arg := range args {
+				actionslet := GetActs(arg, sl)
+				var t Variable
+				if len(actionslet) > 0 {
+					t = Variable(actionslet[len(actionslet)-1].Target)
+				} else {
+					// TODO: add constant support
+					name := arg[0].Value
+					if arg[0].Type == "CONST" {
+						name = TempName()
+						actionslet = append(actionslet, Action{name, "const", []Variable{Variable(arg[0].Value)}, sl})
+					}
+					t = Variable(name)
+				}
+				vs = append(vs, t)
+				actions = append(actions, actionslet...)
+			}
+			targ := TempName()
+			actions = append(actions, Action{targ, action.Value, vs, sl})
+			tokens = append(tokens[:ind], []Token{{"WORD", targ}}...)
 		default:
 			done = true
 			break
@@ -1384,7 +1384,7 @@ type Function struct {
 }
 
 func GenerateFuns() []Function {
-	strs := []string{"print", "out", "where", "len", "stats", "except", "sleep", "read", "write", "isdir", "abs", "lower", "upper", "map", "check_type", "exit", "type", "convert", "list", "array", "pair", "append", "system", "source", "run", "sort", "id", "ternary", "rand", "input", "glob", "env", "range", "fmt", "chdir", "split", "join", "to_upper", "to_lower", "cp", "mv", "rm", "pop", "itc", "cti", "has", "index", "replace", "re_match", "re_find", "rget", "rpost", "arrm", "value", "sub"}
+	strs := []string{"print", "out", "where", "len", "stats", "except", "sleep", "read", "write", "isdir", "abs", "lower", "upper", "map", "check_type", "exit", "type", "convert", "list", "span", "array", "pair", "append", "system", "source", "run", "sort", "id", "ternary", "rand", "input", "glob", "env", "range", "fmt", "chdir", "split", "join", "to_upper", "to_lower", "cp", "mv", "rm", "pop", "itc", "cti", "has", "index", "replace", "re_match", "re_find", "rget", "rpost", "arrm", "value", "sub"}
 	fs := []Function{}
 	for _, str := range strs {
 		fs = append(fs, Function{Name: str})

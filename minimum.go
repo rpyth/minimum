@@ -222,6 +222,7 @@ var rl *readline.Instance
 // read-only flags start
 var is_debug bool
 var is_safe bool
+var is_source bool
 var error_message string
 var error_type string
 
@@ -230,6 +231,7 @@ func init() {
 	inter.RL, _ = readline.New(">> ")
 	is_debug = bytecode.Has(os.Args, "-debug")
 	is_safe = bytecode.Has(os.Args, "-safe")
+	is_source = bytecode.Has(os.Args, "-source")
 }
 
 func timer(name string) func() {
@@ -244,6 +246,9 @@ func main() {
 	if fname != "" {
 		bcode, _ := os.ReadFile(fname)
 		code := string(bcode)
+		if is_source {
+			inter.ShowSource(code)
+		}
 		if is_debug {
 			defer timer("interpreter")()
 		}
