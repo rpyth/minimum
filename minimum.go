@@ -258,7 +258,6 @@ func main() {
 		}
 		in.Nothing("Nothing")
 		in.Run(fmt.Sprintf("_node_%d", bytecode.NodeN-1))
-		//inter.StartFull(code, fname)
 		return
 	}
 	// REPL START
@@ -273,7 +272,7 @@ func main() {
 	in.Nothing("Nothing")
 	in.Run(fmt.Sprintf("_node_%d", bytecode.NodeN-1))
 	for {
-		in.GC()
+		in.GCE()
 		source, err_ := rl.Readline()
 		if err_ != nil { // io.EOF
 			return
@@ -322,7 +321,7 @@ func main() {
 		}
 		last_name := acts[len(acts)-1].Target
 		if !err && len(acts) > 0 && !bytecode.Has([]string{"print", "out", "source", "library"}, acts[len(acts)-1].Type) {
-			switch in.V.Slots[in.V.Names[acts[len(acts)-1].Target]].Type {
+			switch in.Type(acts[len(acts)-1].Target) {
 			case INT:
 				i := in.NamedInt(last_name)
 				fmt.Println(i.String())
@@ -355,101 +354,4 @@ func main() {
 		in.Code[last_node] = append(in.Code[last_node], gc)
 	}
 	// REPL END
-	/*
-		fname := find_file_main(os.Args)
-		if fname != "" {
-			bcode, _ := os.ReadFile(fname)
-			code := string(bcode)
-			in := NewInterpreter(code, fname)
-			if is_debug {
-				defer timer("interpreter")()
-				bytecode.PrintActs(in.Code)
-			}
-			in.Run(fmt.Sprintf("_node_%d", bytecode.NodeN-1))
-		} else {
-			synt := []string{"if ", "while ", "pool ", "else", "set ", "for ", "func ", "process ", "repeat "}
-			//counters
-			var bracket_c, paren_c, curly_c, quote_c int
-			//uncounters
-			var bracket_u, paren_u, curly_u int
-			rl, _ := readline.New("?>>")
-			defer rl.Close()
-			in := NewInterpreter(`!print "[Minimum v"+(!system "version")+" on "+(!system "os")+"]"`, ".") //Interpreter{}
-			in.Run(fmt.Sprintf("_node_%d", bytecode.NodeN-1))
-			for true {
-				source, err_ := rl.Readline()
-				if err_ != nil { // io.EOF
-					return
-				}
-				bracket_u += strings.Count(source, "]")
-				paren_u += strings.Count(source, ")")
-				curly_u += strings.Count(source, "}")
-				bracket_c += strings.Count(source, "[")
-				paren_c += strings.Count(source, "(")
-				curly_c += strings.Count(source, "{")
-				quote_c += strings.Count(source, "\"")
-				break_entry := !contains_any(source, synt) && (bracket_c == bracket_u && paren_c == paren_u && curly_c == curly_u && quote_c%2 == 0)
-				for !break_entry {
-					rl.SetPrompt(" >>")
-					sourcelet, err_ := rl.Readline()
-					if err_ != nil { // io.EOF
-						return
-					}
-					if strings.HasPrefix(sourcelet, " ") {
-						source += "\n" + sourcelet
-					} else if !(bracket_c == bracket_u && paren_c == paren_u && curly_c == curly_u && quote_c%2 == 0) {
-						source += "\n" + sourcelet
-					} else {
-						break_entry = true
-					}
-					bracket_u += strings.Count(sourcelet, "]")
-					paren_u += strings.Count(sourcelet, ")")
-					curly_u += strings.Count(sourcelet, "}")
-					bracket_c += strings.Count(sourcelet, "[")
-					paren_c += strings.Count(sourcelet, "(")
-					curly_c += strings.Count(sourcelet, "{")
-					quote_c += strings.Count(sourcelet, "\"")
-				}
-				rl.SetPrompt("?>>")
-				in.Compile(source, ".")
-				last_node := fmt.Sprintf("_node_%d", bytecode.NodeN-1)
-				gc := in.Code[last_node][len(in.Code[last_node])-1]
-				in.Code[last_node] = in.Code[last_node][:len(in.Code[last_node])-1]
-				acts := in.Code[last_node]
-				err := in.Run(last_node)
-				if !err && len(acts) > 0 && !bytecode.Has([]string{"print", "out", "source", "library"}, acts[len(acts)-1].Type) {
-					switch in.V.Types[in.V.Names[acts[len(acts)-1].Target]] {
-					case INT:
-						i := in.V.Ints[in.V.Names[acts[len(acts)-1].Target]]
-						fmt.Println(i.String())
-					case FLOAT:
-						i := in.V.Floats[in.V.Names[acts[len(acts)-1].Target]]
-						fmt.Println(i.String())
-					case STR:
-						fmt.Println("\"" + in.V.Strs[in.V.Names[acts[len(acts)-1].Target]] + "\"")
-					case LIST:
-						i := in.V.Lists[in.V.Names[acts[len(acts)-1].Target]]
-						fmt.Println(ListString(&i, &in))
-					case ARR:
-						l := in.V.Arrs[in.V.Names[acts[len(acts)-1].Target]]
-						fmt.Print(l.String())
-					case PAIR:
-						p := in.V.Pairs[in.V.Names[acts[len(acts)-1].Target]]
-						fmt.Println(PairString(&p, &in))
-						//i := in.v.Pairs[acts[len(acts)-1].Target]
-						//fmt.Println(i.String())
-					case BOOL:
-						fmt.Println(in.V.Bools[in.V.Names[acts[len(acts)-1].Target]])
-					case BYTE:
-						fmt.Printf("b.%d\n", in.V.Bytes[in.V.Names[acts[len(acts)-1].Target]])
-					case FUNC:
-						fmt.Println("func." + in.V.Funcs[in.V.Names[acts[len(acts)-1].Target]].Name)
-						//fmt.Printf("func.%s\n", in.V.Funs[in.V.Names[acts[len(acts)-1].Target]])
-					}
-				}
-				in.Code[last_node] = append(in.Code[last_node], gc)
-			}
-			return
-		}
-	*/
 }

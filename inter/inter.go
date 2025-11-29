@@ -3590,7 +3590,7 @@ func (in *Interpreter) Run(node_name string) bool {
 				case "os":
 					in.Save(actions[focus].Target, runtime.GOOS)
 				case "version":
-					in.Save(actions[focus].Target, "4.3.2")
+					in.Save(actions[focus].Target, "4.3.3")
 				case "args":
 					l := bytecode.List{}
 					for _, arg := range os.Args {
