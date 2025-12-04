@@ -1,3 +1,6 @@
+//go:build !js
+// +build !js
+
 package main
 
 import (
@@ -6,15 +9,15 @@ import (
 	"math/big"
 	"math/rand/v2"
 	"minimum/bytecode"
+	"minimum/input"
 	"minimum/inter"
+	"net/http"
 	"os"
 	"path/filepath"
 	"runtime"
 	"strings"
 	"time"
 	"unicode/utf8"
-
-	"github.com/chzyer/readline"
 )
 
 const (
@@ -196,6 +199,7 @@ func get_script_path(executable string) string {
 }
 
 func find_file_main(args []string) string {
+	args = append(args, "main.min") // automatic launcher for local file named main.min
 	fname := ""
 	for _, arg := range args[1:] {
 		if _, err := os.Stat(arg); err == nil {
@@ -217,21 +221,23 @@ func contains_any(where string, what []string) bool {
 	return false
 }
 
-var rl *readline.Instance
+var rl = input.Rl
 
 // read-only flags start
 var is_debug bool
 var is_safe bool
 var is_source bool
+var is_server bool
 var error_message string
 var error_type string
 
 func init() {
-	rl, _ = readline.New(">> ")
-	inter.RL, _ = readline.New(">> ")
+	rl, _ = input.NewInputPrompt(">> ")
+	inter.RL, _ = input.NewInputPrompt(">> ")
 	is_debug = bytecode.Has(os.Args, "-debug")
 	is_safe = bytecode.Has(os.Args, "-safe")
 	is_source = bytecode.Has(os.Args, "-source")
+	is_server = bytecode.Has(os.Args, "-server")
 }
 
 func timer(name string) func() {
@@ -242,6 +248,21 @@ func timer(name string) func() {
 }
 
 func main() {
+	if is_safe {
+		inter.IsSafe = true
+	}
+	if is_server {
+		http.HandleFunc("/", inter.ServerHandler)
+		addr := "5000"
+		for n, arg := range os.Args {
+			if arg == "-server" {
+				addr = os.Args[n+1]
+				break
+			}
+		}
+		http.ListenAndServe(":"+addr, nil)
+		return
+	}
 	fname := find_file_main(os.Args)
 	if fname != "" {
 		bcode, _ := os.ReadFile(fname)
@@ -266,7 +287,7 @@ func main() {
 	var bracket_c, paren_c, curly_c, quote_c int
 	//uncounters
 	var bracket_u, paren_u, curly_u int
-	rl, _ := readline.New("?>>")
+	rl, _ := input.NewInputPrompt("?>>")
 	defer rl.Close()
 	in := inter.NewInterpreter(`!print "[Minimum v"+(!system "version")+" on "+(!system "os")+"]"`, ".") //Interpreter{}
 	in.Nothing("Nothing")

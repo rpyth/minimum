@@ -2,12 +2,14 @@ package inter
 
 import (
 	"bytes"
+	"encoding/json"
 	"fmt"
 	"io"
 	"math"
 	"math/big"
 	"math/rand/v2"
 	"minimum/bytecode"
+	"minimum/input"
 	"net/http"
 	"os"
 	"os/exec"
@@ -17,8 +19,6 @@ import (
 	"strconv"
 	"strings"
 	"time"
-
-	"github.com/chzyer/readline"
 )
 
 const (
@@ -1921,7 +1921,34 @@ func (in *Interpreter) Fmt(str string) string {
 	return str
 }
 
-var RL *readline.Instance
+func (in *Interpreter) Stringify(v any) string {
+	str := "Nothing"
+	switch vt := v.(type) {
+	case *big.Int:
+		str = vt.String()
+	case *big.Float:
+		str = vt.String()
+	case string:
+		str = vt
+	case byte:
+		str = fmt.Sprintf("b.%d", vt)
+	case bool:
+		str = ternary(vt, "true", "false")
+	case bytecode.List:
+		str = ListString(&vt, in)
+	case bytecode.Span:
+		str = in.StringSpan(vt)
+	case *bytecode.Function:
+		str = fmt.Sprintf("func.%s", vt.Name)
+	case bytecode.Pair:
+		str = PairString(&vt, in)
+	case *bytecode.MinPtr:
+		str = fmt.Sprintf("id.%x@%x", vt.Addr, vt.Id)
+	}
+	return str
+}
+
+var RL = input.Rl
 var protected_actions = []string{"for", "const", "pool", "error", "func", "process"}
 
 func (in *Interpreter) RunSort(ftype string, sl *bytecode.SourceLine) bool {
@@ -2054,17 +2081,25 @@ func (in *Interpreter) Run(node_name string) bool {
 					in.V.Names[actions[focus].Target] = int(p.Ids[ind].Addr)
 				}
 			case LIST:
+				item, go_err := in.IndexList(in.NamedList(action.First()), in.GetAny(action.Second()))
+				if go_err != nil {
+					in.Error(action, go_err.Error(), "index")
+					return true
+				}
+				in.Save(action.Target, item)
 				// TODO: add errors and slice support
-				l := in.NamedList(string(action.Variables[0]))
-				ind := in.NamedInt(string(action.Variables[1])).Int64()
-				if ind < 0 {
-					ind += int64(len(l.Ids))
-				}
-				if action.Type == "'" {
-					in.Save(action.Target, in.GetAnyRef(l.Ids[ind]))
-				} else {
-					in.V.Names[action.Target] = int(l.Ids[ind].Addr)
-				}
+				/*
+					l := in.NamedList(string(action.Variables[0]))
+					ind := in.NamedInt(string(action.Variables[1])).Int64()
+					if ind < 0 {
+						ind += int64(len(l.Ids))
+					}
+					if action.Type == "'" {
+						in.Save(action.Target, in.GetAnyRef(l.Ids[ind]))
+					} else {
+						in.V.Names[action.Target] = int(l.Ids[ind].Addr)
+					}
+				*/
 			}
 		case "deep":
 			in.Save(string(action.Variables[0]), in.GetAny(string(action.Variables[1])))
@@ -2847,33 +2882,10 @@ func (in *Interpreter) Run(node_name string) bool {
 			*/
 			switch fn.Name {
 			case "print", "out":
-				for _, v := range action.Variables {
-					t := in.Type(string(v))
-					switch t {
-					case INT:
-						fmt.Printf("%s ", in.NamedInt(string(v)).String())
-					case FLOAT:
-						fmt.Printf("%s ", in.NamedFloat(string(v)).String())
-					case BYTE:
-						fmt.Printf("b.%d ", in.NamedByte(string(v)))
-					case BOOL:
-						fmt.Printf("%v ", in.NamedBool(string(v)))
-					case FUNC:
-						fmt.Printf("func.%s ", in.NamedFunc(string(v)).Name)
-					case STR:
-						fmt.Printf("%s ", in.NamedStr(string(v)))
-					case SPAN:
-						fmt.Printf("%s ", in.StringSpan(in.NamedSpan(string(v))))
-					case ID:
-						fmt.Printf("id.%s ", in.NamedId(string(v)).String())
-					case LIST:
-						l := in.NamedList(string(v))
-						fmt.Print(ListString(&l, in) + " ")
-					case PAIR:
-						p := in.NamedPair(string(v))
-						fmt.Print(PairString(&p, in) + " ")
-					case NOTH:
-						fmt.Print("Nothing ")
+				for n, v := range action.Variables {
+					fmt.Print(in.Stringify(in.GetAny(string(v))))
+					if n != len(action.Variables)-1 {
+						fmt.Print(" ")
 					}
 				}
 				if action.Type == "print" {
@@ -2940,6 +2952,35 @@ func (in *Interpreter) Run(node_name string) bool {
 				err = in.Run(last_node)
 				if err {
 					return err
+				}
+			case "runf": // run & forget
+				err := in.CheckArgN(action, 1, 1)
+				if err {
+					return true
+				}
+				err = in.CheckDtype(action, 0, STR)
+				if err {
+					return true
+				}
+				c := in.NamedStr(action.First())
+				var nodes []string
+				for node_name := range in.Code {
+					nodes = append(nodes, node_name)
+				}
+				in.Compile(c, "\""+c+"\"")
+				last_node := fmt.Sprintf("_node_%d", bytecode.NodeN-1)
+				if len(in.Code[last_node]) > 1 {
+					in.Code[last_node] = in.Code[last_node][:len(in.Code[last_node])-1] // let's remove GC action
+				}
+				err = in.Run(last_node)
+				if err {
+					return err
+				}
+				in.Save(action.Target, in.GetAny(in.Code[last_node][len(in.Code[last_node])-1].Target))
+				for node_name := range in.Code {
+					if !bytecode.Has(nodes, node_name) {
+						delete(in.Code, node_name)
+					}
 				}
 			case "isdir":
 				err := in.CheckArgN(action, 1, 1)
@@ -3112,6 +3153,24 @@ func (in *Interpreter) Run(node_name string) bool {
 					}
 					in.Save(action.Target, os.Getenv(in.NamedStr(string(action.Variables[0]))))
 				}
+			case "html_set_inner":
+				err := in.CheckArgN(action, 2, 2)
+				if err {
+					return err
+				}
+				err = in.CheckDtype(action, 0, STR)
+				if err {
+					return err
+				}
+				err = in.CheckDtype(action, 1, STR)
+				if err {
+					return err
+				}
+				go_err := input.SetInnerHtml(in.NamedStr(action.First()), in.NamedStr(action.Second()))
+				if go_err != nil {
+					in.Error(action, go_err.Error(), "sys")
+					return true
+				}
 			case "convert":
 				err := in.CheckArgN(action, 2, 2)
 				if err {
@@ -3208,30 +3267,28 @@ func (in *Interpreter) Run(node_name string) bool {
 				}
 				in.Save(action.Target, interp.GetAnyRef(id))
 			case "read":
-				err := in.CheckArgN(actions[focus], 1, 1)
+				err := in.CheckArgN(action, 1, 1)
 				if err {
 					return true
 				}
-				err = in.CheckDtype(actions[focus], 0, STR)
+				err = in.CheckDtype(action, 0, STR)
 				if err {
 					return true
 				}
-				b, berr := os.ReadFile(in.V.Strs[in.V.Names[string(action.Variables[0])]])
+				b, berr := os.ReadFile(in.NamedStr(action.First()))
 				if berr != nil {
 					in.Error(action, berr.Error(), "file")
 				}
-				a := bytecode.Array{}
-				a.Bytes = append(a.Bytes, b...)
-				a.Dtype = BYTE
+				a := in.NewSpan(len(b), BYTE)
+				for n, bb := range b {
+					in.SpanSet(&a, n, bb)
+				}
 				in.Save(action.Target, a)
 			case "write":
-				// TODO: restore functionality
-				/*
-					if is_safe {
-						in.Error(action, "cannot write to files when in safe mode!", "permission")
-						return true
-					}
-				*/
+				if IsSafe {
+					in.Error(action, "cannot write to files when in safe mode!", "permission")
+					return true
+				}
 				err := in.CheckArgN(actions[focus], 2, 2)
 				if err {
 					return true
@@ -3251,6 +3308,34 @@ func (in *Interpreter) Run(node_name string) bool {
 						in.Error(action, oserr.Error(), "sys")
 						return true
 					}
+				}
+			case "mkdir":
+				err := in.CheckArgN(action, 1, 1)
+				if err {
+					return true
+				}
+				err = in.CheckDtype(action, 0, STR)
+				if err {
+					return true
+				}
+				go_err := os.Mkdir(in.NamedStr(action.First()), 0644)
+				if go_err != nil {
+					in.Error(action, go_err.Error(), "sys")
+					return true
+				}
+			case "remove":
+				err := in.CheckArgN(action, 1, 1)
+				if err {
+					return true
+				}
+				err = in.CheckDtype(action, 0, STR)
+				if err {
+					return true
+				}
+				go_err := os.Remove(in.NamedStr(action.First()))
+				if go_err != nil {
+					in.Error(action, go_err.Error(), "sys")
+					return true
 				}
 			case "len":
 				err := in.CheckArgN(action, 1, 1)
@@ -3289,12 +3374,34 @@ func (in *Interpreter) Run(node_name string) bool {
 					time.Sleep(time.Duration(int64(in.NamedByte(action.First()))) * 1000 * time.Millisecond)
 				}
 			case "range":
+				err := in.CheckArgN(action, 1, 3)
+				if err {
+					return err
+				}
 				i := in.NamedInt(string(action.Variables[0]))
-				s := in.NewSpan(int(i.Int64()), INT)
+				s := bytecode.Span{} //in.NewSpan(int(i.Int64()), INT)
 				iterated := big.NewInt(0)
+				step := big.NewInt(1)
+				if len(action.Variables) > 1 {
+					iterated.Set(in.NamedInt(action.First()))
+					i.Set(in.NamedInt(action.Second()))
+					if len(action.Variables) > 2 {
+						step.Set(in.NamedInt(action.Third()))
+						s = in.NewSpan(int(i.Int64()-iterated.Int64())/int(step.Int64()), INT)
+					} else {
+						s = in.NewSpan(int(i.Int64()-iterated.Int64()), INT)
+					}
+				} else {
+					s = in.NewSpan(int(i.Int64()), INT)
+				}
+				counter := uint64(0)
 				for iterated.Cmp(i) == -1 {
-					in.V.Ints[s.Start+iterated.Uint64()].Set(iterated)
-					iterated = big.NewInt(iterated.Int64() + 1)
+					in.SpanSet(&s, int(counter), iterated)
+					iterated.Add(iterated, step)
+					i2 := big.NewInt(0)
+					i2.Set(iterated)
+					iterated = i2
+					counter++
 				}
 				in.Save(action.Target, s)
 			case "span":
@@ -3622,6 +3729,17 @@ func (in *Interpreter) Run(node_name string) bool {
 						}
 					}
 					in.Save(action.Target, fs)
+				case "vars":
+					vs := bytecode.Pair{make(map[string]*bytecode.MinPtr)}
+					interp := in
+					for interp != nil {
+						for name, i := range interp.V.Names {
+							vs.Ids["str:"+name] = &bytecode.MinPtr{Addr: uint64(i), Id: interp.Id}
+							// PairAppend(&vs, in, in.GetAnyRef(&bytecode.MinPtr{Id: interp.Id, Addr: uint64(i)}), name)
+						}
+						interp = interp.Parent
+					}
+					in.Save(action.Target, vs)
 				}
 			case "chdir":
 				err := in.CheckArgN(action, 1, 1)
@@ -3686,10 +3804,15 @@ func (in *Interpreter) Run(node_name string) bool {
 				if !in.CheckDtype(actions[focus], 0, STR) || !in.CheckDtype(actions[focus], 1, PAIR) {
 					return true
 				}
-				url := in.V.Strs[in.V.Names[string(actions[focus].Variables[0])]]
-				pair := in.V.Pairs[in.V.Names[string(actions[focus].Variables[1])]]
-				jsonStr := PairString(&pair, in)
-				resp, err2 := http.Post(url, "application/json", bytes.NewBuffer([]byte(jsonStr)))
+				url := in.NamedStr(action.First())
+				pair := in.NamedPair(action.Second())
+				// jsonStr := PairString(&pair, in)
+				jsonBytes, go_err := json.Marshal(in.PairToJson(pair))
+				if go_err != nil {
+					in.Error(action, go_err.Error(), "json")
+					return true
+				}
+				resp, err2 := http.Post(url, "application/json", bytes.NewBuffer(jsonBytes))
 				if err2 != nil {
 					in.Error(actions[focus], err2.Error(), "sys")
 					return true
@@ -4229,6 +4352,33 @@ func (in *Interpreter) Type(name string) byte {
 	return in.V.Slots[in.V.Names[name]].Type
 }
 
+func (in *Interpreter) IndexList(l bytecode.List, ind_any any) (any, error) {
+	switch ind := ind_any.(type) {
+	case *big.Int:
+		ind_int := int(ind.Int64())
+		if ind_int < 0 {
+			ind_int += len(l.Ids)
+		}
+		if ind_int < 0 {
+			return nil, fmt.Errorf("impossible index")
+		}
+		return in.GetAnyRef(l.Ids[ind_int]), nil
+	case bytecode.List:
+		nl := bytecode.List{}
+		for _, ptr := range ind.Ids {
+			sub_ind := in.GetAnyRef(ptr)
+			sub_item, err := in.IndexList(l, sub_ind)
+			if err != nil {
+				return nil, err
+			}
+			ListAppend(&nl, in, sub_item)
+		}
+		return nl, nil
+	default:
+		return nil, fmt.Errorf("unsupported index type")
+	}
+}
+
 func (in *Interpreter) TypeRef(ref *bytecode.MinPtr) byte {
 	if ref.Id != in.Id {
 		return in.Parent.TypeRef(ref)
@@ -4263,6 +4413,8 @@ func (in *Interpreter) Compare(v0, v1 any) bool {
 		return v0t == v1.(byte)
 	case uint64:
 		return v0t == v1.(uint64)
+	case *bytecode.Function:
+		return v0t == v1.(*bytecode.Function)
 	case bytecode.List:
 		v1t := v1.(bytecode.List)
 		if len(v0t.Ids) != len(v1t.Ids) {
@@ -4569,3 +4721,151 @@ func ShowSource(source string) {
 	lines = append([]string{pad}, append(lines, pad)...)
 	fmt.Println(strings.Join(lines, "\n"))
 }
+
+func (in *Interpreter) PairToJson(p bytecode.Pair) map[string]any {
+	m := make(map[string]any)
+	for key, ptr := range p.Ids {
+		splitted := strings.SplitN(key, ":", 2)
+		key_type := splitted[0]
+		key_real := splitted[1]
+		switch key_type {
+		case "str":
+			v := in.GetAnyRef(ptr)
+			switch v_typed := v.(type) {
+			case *big.Int:
+				i := v_typed.Int64()
+				m[key_real] = i
+			case *big.Float:
+				f, _ := v_typed.Float64()
+				m[key_real] = f
+			case bytecode.Pair:
+				m[key_real] = in.PairToJson(v_typed)
+			case bytecode.List:
+				m[key_real] = in.ListToJson(v_typed)
+			default:
+				m[key_real] = v_typed
+			}
+		case "int":
+			v := in.GetAnyRef(ptr)
+			switch v_typed := v.(type) {
+			case *big.Int:
+				i := v_typed.Int64()
+				m[key_real] = i
+			case *big.Float:
+				f, _ := v_typed.Float64()
+				m[key_real] = f
+			case bytecode.Pair:
+				m[key_real] = in.PairToJson(v_typed)
+			case bytecode.List:
+				m[key_real] = in.ListToJson(v_typed)
+			default:
+				m[key_real] = v_typed
+			}
+		}
+	}
+	return m
+}
+
+func (in *Interpreter) ListToJson(l bytecode.List) []any {
+	lany := []any{}
+	for _, ptr := range l.Ids {
+		v := in.GetAnyRef(ptr)
+		switch v_typed := v.(type) {
+		case *big.Int:
+			i := v_typed.Int64()
+			lany = append(lany, i)
+		case *big.Float:
+			f, _ := v_typed.Float64()
+			lany = append(lany, f)
+		case bytecode.Pair:
+			lany = append(lany, in.PairToJson(v_typed))
+		case bytecode.List:
+			lany = append(lany, in.ListToJson(v_typed))
+		default:
+			lany = append(lany, v_typed)
+		}
+	}
+	return lany
+}
+
+type RunRequest struct {
+	Variables []string `json:"variables"`
+	Code      string   `json:"code"`
+}
+
+func ServerHandler(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	//bodyBytes, _ := io.ReadAll(r.Body)
+	//println(string(bodyBytes))
+	var req RunRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, "Invalid JSON: "+err.Error(), http.StatusBadRequest)
+		return
+	}
+
+	in := &Interpreter{
+		V:    &Vars{Names: make(map[string]int)},
+		Id:   rand.Uint64(),
+		Code: make(map[string][]bytecode.Action),
+	}
+
+	result := in.RunJson(req)
+
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusOK)
+	json.NewEncoder(w).Encode(result)
+}
+
+func (in *Interpreter) RunJson(req RunRequest) map[string]any {
+	// Track existing nodes so we can delete temporary ones later
+	var originalNodes []string
+	for node := range in.Code {
+		originalNodes = append(originalNodes, node)
+	}
+
+	// Compile the code
+	in.Compile(req.Code, "json")
+	lastNode := fmt.Sprintf("_node_%d", bytecode.NodeN-1)
+
+	// Remove GC action
+	if len(in.Code[lastNode]) > 1 {
+		in.Code[lastNode] = in.Code[lastNode][:len(in.Code[lastNode])-1]
+	}
+
+	// Run the code
+	in.Run(lastNode)
+
+	// Collect results
+	result := make(map[string]any)
+	for _, name := range req.Variables {
+		val := in.GetAny(name)
+
+		switch in.Type(name) {
+		case INT:
+			val = val.(*big.Int).Int64()
+		case FLOAT:
+			val, _ = val.(*big.Float).Float64()
+		case LIST:
+			val = in.ListToJson(val.(bytecode.List))
+		case PAIR:
+			val = in.PairToJson(val.(bytecode.Pair))
+		}
+
+		result[name] = val
+	}
+
+	// Remove temporary compiled nodes
+	for node := range in.Code {
+		if !bytecode.Has(originalNodes, node) {
+			delete(in.Code, node)
+		}
+	}
+
+	return result
+}
+
+var IsSafe bool
