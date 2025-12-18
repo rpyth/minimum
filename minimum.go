@@ -252,6 +252,16 @@ func main() {
 		inter.IsSafe = true
 	}
 	if is_server {
+		if fname := find_file_main(os.Args); fname != "" {
+			bcode, _ := os.ReadFile(fname)
+			code := string(bcode)
+			if is_source {
+				inter.ShowSource(code)
+			}
+			inter.ServerInterpreter = inter.NewInterpreterPtr(code, fname)
+			inter.ServerInterpreter.Nothing("Nothing")
+			inter.ServerInterpreter.Run(fmt.Sprintf("_node_%d", bytecode.NodeN-1))
+		}
 		http.HandleFunc("/", inter.ServerHandler)
 		addr := "5000"
 		for n, arg := range os.Args {

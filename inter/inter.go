@@ -2,6 +2,7 @@ package inter
 
 import (
 	"bytes"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -448,6 +449,21 @@ func PairKey(in *Interpreter, iname any) string {
 
 func NewInterpreter(code, file string) Interpreter {
 	in := Interpreter{}
+	in.Id = rand.Uint64()
+	in.Code = bytecode.GetCode(code)
+	in.File = &file
+	in.V = &Vars{}
+	in.V.Names = make(map[string]int)
+	for _, fn := range bytecode.GenerateFuns() {
+		in.Save(fn.Name, &fn)
+	}
+	in.V.gcMax = 10000
+	in.Nothing("Nothing") // create Nothing in top scope
+	return in
+}
+
+func NewInterpreterPtr(code, file string) *Interpreter {
+	in := &Interpreter{}
 	in.Id = rand.Uint64()
 	in.Code = bytecode.GetCode(code)
 	in.File = &file
@@ -2668,7 +2684,7 @@ func (in *Interpreter) Run(node_name string) bool {
 				return err
 			}
 			o, t := in.EqualizeTypes(string(actions[focus].Variables[0]), "_case"+node_name)
-			switch in.V.Slots[in.V.Names[o]].Type {
+			switch in.Type(o) {
 			case INT:
 				r := in.NamedInt(o).Cmp(in.NamedInt(t))
 				if r == 0 {
@@ -2755,6 +2771,10 @@ func (in *Interpreter) Run(node_name string) bool {
 							in.Save(targets[i], in.V.Bytes[valIndex])
 						case ID:
 							in.Save(targets[i], in.V.Ids[valIndex])
+						case PAIR:
+							in.Save(targets[i], in.V.Pairs[valIndex])
+						case LIST:
+							in.Save(targets[i], in.V.Lists[valIndex])
 						default:
 							panic("unsupported span dtype in for loop")
 						}
@@ -2784,6 +2804,8 @@ func (in *Interpreter) Run(node_name string) bool {
 							in.Save(targets[i], interp.V.Ids[interp.V.Slots[valIndex.Addr].Index])
 						case LIST:
 							in.Save(targets[i], interp.V.Lists[interp.V.Slots[valIndex.Addr].Index])
+						case PAIR:
+							in.Save(targets[i], interp.V.Pairs[interp.V.Slots[valIndex.Addr].Index])
 						default:
 							panic("unsupported span dtype in for loop")
 						}
@@ -2847,6 +2869,7 @@ func (in *Interpreter) Run(node_name string) bool {
 				return e
 			}
 			in.Error(action, in.NamedStr(action.First()), in.NamedStr(action.Second()))
+			return true
 		case "$":
 			text_command := strings.TrimSpace(strings.SplitN(action.Source.Source, "$", 2)[1])
 			arguments := in.Parse(text_command)
@@ -3198,17 +3221,27 @@ func (in *Interpreter) Run(node_name string) bool {
 							s := in.NamedSpan(string(action.Variables[0]))
 							switch s.Dtype {
 							case BYTE:
-								in.Save(action.Target, string(in.V.Bytes[s.Start:s.Start+s.Length]))
+								if in.NamedStr(action.Second()) == "x" {
+									in.Save(action.Target, fmt.Sprintf("%x", in.V.Bytes[s.Start:s.Start+s.Length]))
+								} else {
+									in.Save(action.Target, string(in.V.Bytes[s.Start:s.Start+s.Length]))
+								}
+							default:
+								in.Save(action.Target, in.StringSpan(s))
 							}
 						}
 					case INT:
 						switch in.Type(action.First()) {
+						case STR:
+							i := big.NewInt(0)
+							i.SetString(in.NamedStr(action.First()), 10)
+							in.Save(action.Target, i)
 						case FLOAT:
 							v, _ := in.NamedFloat(string(action.Variables[0])).Int(big.NewInt(0))
 							in.Save(action.Target, v)
 						case BYTE:
-							v, _ := in.NamedFloat(string(action.Variables[0])).Int64()
-							in.Save(action.Target, byte(v))
+							v := in.NamedByte(string(action.Variables[0]))
+							in.Save(action.Target, big.NewInt(int64(v)))
 						}
 					case FLOAT:
 						switch in.Type(action.First()) {
@@ -3234,9 +3267,11 @@ func (in *Interpreter) Run(node_name string) bool {
 							s := in.NamedSpan(string(action.Variables[0]))
 							for n := s.Start; n < s.Start+s.Length; n++ {
 								var v any = big.NewInt(0)
-								switch s.Dtype {
+								switch s.Dtype { // TODO: add all possible data types
 								case INT:
 									v = in.V.Ints[n]
+								case BYTE:
+									v = in.V.Bytes[n]
 								}
 								ListAppend(&l, in, v)
 							}
@@ -3246,9 +3281,14 @@ func (in *Interpreter) Run(node_name string) bool {
 						switch in.Type(action.First()) {
 						case STR:
 							str := in.NamedStr(string(action.Variables[0]))
-							s := in.NewSpan(len(str), BYTE)
-							for n := 0; n < len(str); n++ {
-								in.V.Bytes[s.Start+uint64(n)] = str[n]
+							data, go_err := hex.DecodeString(str)
+							if go_err != nil {
+								in.Error(action, go_err.Error(), "sys")
+								return true
+							}
+							s := in.NewSpan(len(data), BYTE)
+							for n := 0; n < len(data); n++ {
+								in.V.Bytes[s.Start+uint64(n)] = data[n]
 							}
 							in.Save(action.Target, s)
 						}
@@ -3289,21 +3329,30 @@ func (in *Interpreter) Run(node_name string) bool {
 					in.Error(action, "cannot write to files when in safe mode!", "permission")
 					return true
 				}
-				err := in.CheckArgN(actions[focus], 2, 2)
+				err := in.CheckArgN(action, 2, 2)
 				if err {
 					return true
 				}
-				err = in.CheckDtype(actions[focus], 0, STR)
+				err = in.CheckDtype(action, 0, STR)
 				if err {
 					return true
 				}
-				err = in.CheckDtype(actions[focus], 1, SPAN)
+				err = in.CheckDtype(action, 1, SPAN, STR)
 				if err {
 					return true
 				}
-				s := in.NamedSpan(string(action.Variables[1]))
-				if s.Dtype == BYTE {
-					oserr := os.WriteFile(in.NamedStr(string(action.Variables[0])), in.V.Bytes[s.Start:s.Start+s.Length], 0644)
+				if in.Type(action.Second()) == SPAN {
+					s := in.NamedSpan(string(action.Variables[1]))
+					if s.Dtype == BYTE {
+						oserr := os.WriteFile(in.NamedStr(string(action.Variables[0])), in.V.Bytes[s.Start:s.Start+s.Length], 0777)
+						if oserr != nil {
+							in.Error(action, oserr.Error(), "sys")
+							return true
+						}
+					}
+				} else {
+					str := in.NamedStr(action.Second())
+					oserr := os.WriteFile(in.NamedStr(action.First()), []byte(str), 0777)
 					if oserr != nil {
 						in.Error(action, oserr.Error(), "sys")
 						return true
@@ -3318,7 +3367,7 @@ func (in *Interpreter) Run(node_name string) bool {
 				if err {
 					return true
 				}
-				go_err := os.Mkdir(in.NamedStr(action.First()), 0644)
+				go_err := os.MkdirAll(in.NamedStr(action.First()), 0777)
 				if go_err != nil {
 					in.Error(action, go_err.Error(), "sys")
 					return true
@@ -3696,8 +3745,10 @@ func (in *Interpreter) Run(node_name string) bool {
 				switch in.NamedStr(string(actions[focus].Variables[0])) {
 				case "os":
 					in.Save(actions[focus].Target, runtime.GOOS)
+				case "arch":
+					in.Save(actions[focus].Target, runtime.GOARCH)
 				case "version":
-					in.Save(actions[focus].Target, "4.3.3")
+					in.Save(actions[focus].Target, "4.3.4")
 				case "args":
 					l := bytecode.List{}
 					for _, arg := range os.Args {
@@ -3796,12 +3847,15 @@ func (in *Interpreter) Run(node_name string) bool {
 				PairAppend(&pnew, in, string(body), "body")
 				in.Save(actions[focus].Target, pnew)
 				resp.Body.Close()
+			case "jsonp":
+				p := in.JsonPair([]byte(in.NamedStr(action.First())))
+				in.Save(action.Target, p)
 			case "rpost":
-				err := in.CheckArgN(actions[focus], 2, 2)
+				err := in.CheckArgN(action, 2, 2)
 				if err {
 					return true
 				}
-				if !in.CheckDtype(actions[focus], 0, STR) || !in.CheckDtype(actions[focus], 1, PAIR) {
+				if in.CheckDtype(action, 0, STR) && in.CheckDtype(action, 1, PAIR) {
 					return true
 				}
 				url := in.NamedStr(action.First())
@@ -3814,19 +3868,23 @@ func (in *Interpreter) Run(node_name string) bool {
 				}
 				resp, err2 := http.Post(url, "application/json", bytes.NewBuffer(jsonBytes))
 				if err2 != nil {
-					in.Error(actions[focus], err2.Error(), "sys")
+					in.Error(action, err2.Error(), "sys")
 					return true
 				}
 
 				body, err3 := io.ReadAll(resp.Body)
 				if err3 != nil {
-					in.Error(actions[focus], err3.Error(), "sys")
+					in.Error(action, err3.Error(), "sys")
 					return true
 				}
 				pnew := bytecode.Pair{}
 				pnew.Ids = make(map[string]*bytecode.MinPtr)
 				PairAppend(&pnew, in, big.NewInt(int64(resp.StatusCode)), "code")
-				PairAppend(&pnew, in, string(body), "body")
+				if strings.Contains(resp.Header.Get("Content-Type"), "application/json") {
+					PairAppend(&pnew, in, string(body), "body")
+				} else {
+					PairAppend(&pnew, in, string(body), "body")
+				}
 				in.Save(actions[focus].Target, pnew)
 				resp.Body.Close()
 			case "split":
@@ -3868,6 +3926,33 @@ func (in *Interpreter) Run(node_name string) bool {
 					}
 				}
 				in.Save(action.Target, strings.Join(to_join, in.NamedStr(string(action.Variables[1]))))
+			case "cti":
+				if err := in.CheckArgN(action, 1, 1); err {
+					return err
+				}
+				if err := in.CheckDtype(action, 0, STR); err {
+					return err
+				}
+				str := in.NamedStr(action.First())
+				if len(str) == 0 {
+					in.Error(action, "zero length string in cti", "index")
+					return true
+				}
+				i64 := int64([]rune(str)[0])
+				in.Save(action.Target, big.NewInt(i64))
+			case "itc":
+				if err := in.CheckArgN(action, 1, 1); err {
+					return err
+				}
+				if err := in.CheckDtype(action, 0, INT); err {
+					return err
+				}
+				i64 := in.NamedInt(action.First()).Int64()
+				if i64 < 0 {
+					in.Error(action, "negative integer conversion to str", "index")
+					return true
+				}
+				in.Save(action.Target, string([]rune{rune(i64)}))
 			case "stats":
 				err := in.CheckArgN(action, 1, 1)
 				if err {
@@ -4793,12 +4878,15 @@ type RunRequest struct {
 	Code      string   `json:"code"`
 }
 
+var ServerInterpreter *Interpreter
+
 func ServerHandler(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
 
+	compile := r.URL.Query().Get("compile")
 	//bodyBytes, _ := io.ReadAll(r.Body)
 	//println(string(bodyBytes))
 	var req RunRequest
@@ -4807,24 +4895,28 @@ func ServerHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	in := &Interpreter{
-		V:    &Vars{Names: make(map[string]int)},
-		Id:   rand.Uint64(),
-		Code: make(map[string][]bytecode.Action),
+	if ServerInterpreter == nil {
+		ServerInterpreter = &Interpreter{
+			V:    &Vars{Names: make(map[string]int)},
+			Id:   rand.Uint64(),
+			Code: make(map[string][]bytecode.Action),
+		}
 	}
 
-	result := in.RunJson(req)
+	result := ServerInterpreter.RunJson(req, compile == "")
 
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)
 	json.NewEncoder(w).Encode(result)
 }
 
-func (in *Interpreter) RunJson(req RunRequest) map[string]any {
+func (in *Interpreter) RunJson(req RunRequest, forget bool) map[string]any {
 	// Track existing nodes so we can delete temporary ones later
 	var originalNodes []string
-	for node := range in.Code {
-		originalNodes = append(originalNodes, node)
+	if forget {
+		for node := range in.Code {
+			originalNodes = append(originalNodes, node)
+		}
 	}
 
 	// Compile the code
@@ -4858,6 +4950,9 @@ func (in *Interpreter) RunJson(req RunRequest) map[string]any {
 		result[name] = val
 	}
 
+	if !forget {
+		return result
+	}
 	// Remove temporary compiled nodes
 	for node := range in.Code {
 		if !bytecode.Has(originalNodes, node) {
@@ -4869,3 +4964,54 @@ func (in *Interpreter) RunJson(req RunRequest) map[string]any {
 }
 
 var IsSafe bool
+
+func (in *Interpreter) JsonPair(obj []byte) bytecode.Pair {
+	target := make(map[string]any)
+	json.Unmarshal(obj, &target)
+	p := bytecode.Pair{Ids: make(map[string]*bytecode.MinPtr)}
+	for key, valany := range target {
+		switch val := valany.(type) {
+		case int:
+			PairAppend(&p, in, big.NewInt(int64(val)), key)
+		case float64:
+			PairAppend(&p, in, big.NewFloat(val), key)
+		case string:
+			PairAppend(&p, in, val, key)
+		case []any:
+			b, _ := json.Marshal(val)
+			PairAppend(&p, in, in.JsonList(b), key)
+		case map[string]any:
+			b, _ := json.Marshal(val)
+			PairAppend(&p, in, in.JsonPair(b), key)
+		default:
+			PairAppend(&p, in, val, key)
+
+		}
+	}
+	return p
+}
+
+func (in *Interpreter) JsonList(obj []byte) bytecode.List {
+	var val []any
+	json.Unmarshal(obj, &val)
+	l := bytecode.List{}
+	for _, a := range val {
+		switch val_item := a.(type) {
+		case int:
+			ListAppend(&l, in, big.NewInt(int64(val_item)))
+		case float64:
+			ListAppend(&l, in, big.NewFloat(val_item))
+		case string:
+			ListAppend(&l, in, val)
+		case []any:
+			b, _ := json.Marshal(val_item)
+			ListAppend(&l, in, in.JsonList(b))
+		case map[string]any:
+			b, _ := json.Marshal(val_item)
+			ListAppend(&l, in, in.JsonPair(b))
+		default:
+			ListAppend(&l, in, val_item)
+		}
+	}
+	return l
+}

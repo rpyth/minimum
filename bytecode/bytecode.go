@@ -118,8 +118,10 @@ func sort_keys(mkeys map[string]string) []string {
 }
 
 func remove_strings(source string) (string, map[string]string) {
+	// TODO: fix bug where \n in string shifts indexes by 1
 	str_map := make(map[string]string)
 	parts := split_code(source)
+	parts_n := split_code(strings.ReplaceAll(source, "\\n", "/n"))
 	code_parts := []string{}
 	name_n := 0
 	for n := 0; n < len(parts); n++ {
@@ -129,6 +131,9 @@ func remove_strings(source string) (string, map[string]string) {
 			name := fmt.Sprintf("_str_%d", name_n)
 			name_n++
 			code_parts = append(code_parts, name)
+			if n < len(parts)-1 {
+				parts[n+1] = strings.Repeat("\n", strings.Count(parts_n[n], "\n")) + parts[n+1] // TODO: evaluate behavior ###
+			}
 			str_map[name] = parts[n]
 			//println(parts[n])
 		}
@@ -166,6 +171,24 @@ func split_code(code string) []string {
 			code = code[3:]
 		case strings.HasPrefix(code, "\\r"):
 			splitted[len(splitted)-1] += "\r"
+			code = code[2:]
+		case strings.HasPrefix(code, "\""):
+			splitted = append(splitted, "")
+			code = code[1:]
+		default:
+			r, size := utf8.DecodeRuneInString(code)
+			splitted[len(splitted)-1] += string(r) //code[0:1]
+			code = code[size:]
+		}
+	}
+	return splitted
+}
+func split_code_n(code string) []string {
+	splitted := []string{""}
+	for len(code) > 0 {
+		switch {
+		case strings.HasPrefix(code, "\\\""):
+			splitted[len(splitted)-1] += "\""
 			code = code[2:]
 		case strings.HasPrefix(code, "\""):
 			splitted = append(splitted, "")
@@ -1384,7 +1407,7 @@ type Function struct {
 }
 
 func GenerateFuns() []Function {
-	strs := []string{"print", "out", "where", "len", "stats", "except", "sleep", "read", "write", "remove", "isdir", "mkdir", "abs", "lower", "upper", "map", "check_type", "exit", "type", "convert", "list", "span", "array", "pair", "append", "system", "source", "run", "runf", "sort", "id", "ternary", "rand", "input", "glob", "env", "range", "fmt", "chdir", "split", "join", "cp", "mv", "rm", "pop", "itc", "cti", "has", "index", "replace", "re_match", "re_find", "rget", "rpost", "arrm", "value", "sub", "html_set_inner"}
+	strs := []string{"print", "out", "where", "len", "stats", "except", "sleep", "read", "write", "remove", "isdir", "mkdir", "abs", "lower", "upper", "map", "jsonp", "check_type", "exit", "type", "convert", "list", "span", "array", "pair", "append", "system", "source", "run", "runf", "sort", "id", "ternary", "rand", "input", "glob", "env", "range", "fmt", "chdir", "split", "join", "cp", "mv", "rm", "pop", "itc", "cti", "has", "index", "replace", "re_match", "re_find", "rget", "rpost", "arrm", "value", "sub", "html_set_inner"}
 	fs := []Function{}
 	for _, str := range strs {
 		fs = append(fs, Function{Name: str})
