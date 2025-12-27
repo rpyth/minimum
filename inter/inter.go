@@ -2,6 +2,7 @@ package inter
 
 import (
 	"bytes"
+	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
@@ -112,6 +113,11 @@ func (in *Interpreter) SpawnProcess(node string, targetList, childItem string, c
 	child.Copy(in)
 	for _, c := range copies {
 		child.Save(c, in.GetAny(c))
+		if in.Type(c) == PAIR {
+			child.Save(c, child.CopyPair(c, in))
+		} else if in.Type(c) == LIST {
+			child.Save(c, child.CopyList(c, in))
+		}
 	}
 
 	proc := &ChildProcess{
@@ -1997,9 +2003,19 @@ func (in *Interpreter) checkChildProcesses() {
 func (in *Interpreter) integrateChildResult(proc *ChildProcess) {
 	// append result into parent's list
 	lst := in.NamedList(proc.TargetList)
-	lst = in.CopyList(proc.TargetList, proc.Interp)
-	ref := in.SaveRefNew(proc.Interp.GetAny(proc.ResultName))
-	lst.Ids = append(lst.Ids, ref)
+	//lst = in.CopyList(proc.TargetList, proc.Interp)
+	//ref := in.SaveRefNew(proc.Interp.GetAny(proc.ResultName))
+	a := proc.Interp.GetAny(proc.ResultName)
+	tb := TypeToByte(a)
+	if tb == PAIR {
+		l := in.CopyPair(proc.ResultName, proc.Interp)
+		ListAppend(&lst, in, l)
+	} else if tb == LIST {
+		l := in.CopyList(proc.ResultName, proc.Interp)
+		ListAppend(&lst, in, l)
+	} else {
+		ListAppend(&lst, in, a)
+	}
 	in.Save(proc.TargetList, lst)
 }
 
@@ -2074,15 +2090,43 @@ func (in *Interpreter) Run(node_name string) bool {
 				in.Save(actions[focus].Target, in.NamedByte(o)+in.NamedByte(t))
 			}
 		case "'", "''":
+			err := in.CheckArgN(action, 2, 2)
+			if err {
+				return err
+			}
+			err = in.CheckDtype(action, 0, STR, LIST, PAIR)
+			if err {
+				return err
+			}
+			err = in.CheckDtype(action, 1, INT, LIST, STR, BOOL)
+			if err {
+				return err
+			}
 			switch in.Type(action.First()) {
 			case STR:
 				str := in.NamedStr(string(action.Variables[0]))
-				ind := in.NamedInt(string(action.Variables[1])).Int64()
-				if ind < 0 {
-					ind += int64(len([]rune(str)))
-				}
-				if action.Type == "'" {
-					in.Save(action.Target, string([]rune(str)[ind]))
+				if in.Type(action.Second()) == INT {
+					ind := in.NamedInt(string(action.Variables[1])).Int64()
+					if ind < 0 {
+						ind += int64(len([]rune(str)))
+					}
+					if action.Type == "'" {
+						in.Save(action.Target, string([]rune(str)[ind]))
+					}
+				} else {
+					l := in.NamedList(action.Second())
+					str1 := []rune(in.NamedStr(action.First()))
+					str2 := ""
+					for _, ptr := range l.Ids {
+						ind := in.GetAnyRef(ptr).(*big.Int).Int64()
+						if ind < 0 {
+							ind += int64(len(str1))
+						}
+						if action.Type == "'" {
+							str2 += string(str1[ind])
+						}
+					}
+					in.Save(action.Target, str2)
 				}
 			case PAIR:
 				p := in.NamedPair(string(action.Variables[0]))
@@ -3281,7 +3325,15 @@ func (in *Interpreter) Run(node_name string) bool {
 						switch in.Type(action.First()) {
 						case STR:
 							str := in.NamedStr(string(action.Variables[0]))
-							data, go_err := hex.DecodeString(str)
+							var data []byte
+							var go_err error
+							if strings.HasPrefix(str, "hex:") {
+								data, go_err = hex.DecodeString(str[len("hex:"):])
+							} else if strings.HasPrefix(str, "base64:") {
+								data, go_err = base64.StdEncoding.DecodeString(str[len("base64:"):])
+							} else {
+								data = []byte(str)
+							}
 							if go_err != nil {
 								in.Error(action, go_err.Error(), "sys")
 								return true
@@ -3748,7 +3800,7 @@ func (in *Interpreter) Run(node_name string) bool {
 				case "arch":
 					in.Save(actions[focus].Target, runtime.GOARCH)
 				case "version":
-					in.Save(actions[focus].Target, "4.3.4")
+					in.Save(actions[focus].Target, "4.3.5")
 				case "args":
 					l := bytecode.List{}
 					for _, arg := range os.Args {
@@ -3792,6 +3844,33 @@ func (in *Interpreter) Run(node_name string) bool {
 					}
 					in.Save(action.Target, vs)
 				}
+			case "keys":
+				err := in.CheckArgN(action, 1, 1)
+				if err {
+					return err
+				}
+				err = in.CheckDtype(action, 0, PAIR)
+				if err {
+					return err
+				}
+				l := bytecode.List{}
+				p := in.NamedPair(action.First())
+				for fkey := range p.Ids {
+					splitted := strings.SplitN(fkey, ":", 2)
+					t, key := splitted[0], splitted[1]
+					switch t {
+					case "str":
+						ListAppend(&l, in, key)
+					case "int":
+						b := big.NewInt(0)
+						b.SetString(key, 10)
+						ListAppend(&l, in, b)
+					case "bool":
+						b := ternary(key == "true", true, false)
+						ListAppend(&l, in, b)
+					}
+				}
+				in.Save(action.Target, l)
 			case "chdir":
 				err := in.CheckArgN(action, 1, 1)
 				if err {
@@ -3972,7 +4051,7 @@ func (in *Interpreter) Run(node_name string) bool {
 				PairAppend(&p, in, info.IsDir(), "is_dir")
 				PairAppend(&p, in, big.NewInt(info.Size()), "size")
 				PairAppend(&p, in, big.NewInt(info.ModTime().Unix()), "mod_time")
-				PairAppend(&p, in, info.ModTime().UTC().Format("2006/01/02 15:04:05"), "mod_date")
+				PairAppend(&p, in, info.ModTime().Format("2006/01/02 15:04:05"), "mod_date")
 				in.Save(action.Target, p)
 			case "id":
 				err := in.CheckArgN(action, 1, 2)

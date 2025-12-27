@@ -1407,7 +1407,7 @@ type Function struct {
 }
 
 func GenerateFuns() []Function {
-	strs := []string{"print", "out", "where", "len", "stats", "except", "sleep", "read", "write", "remove", "isdir", "mkdir", "abs", "lower", "upper", "map", "jsonp", "check_type", "exit", "type", "convert", "list", "span", "array", "pair", "append", "system", "source", "run", "runf", "sort", "id", "ternary", "rand", "input", "glob", "env", "range", "fmt", "chdir", "split", "join", "cp", "mv", "rm", "pop", "itc", "cti", "has", "index", "replace", "re_match", "re_find", "rget", "rpost", "arrm", "value", "sub", "html_set_inner"}
+	strs := []string{"print", "out", "where", "len", "stats", "except", "sleep", "read", "write", "remove", "isdir", "mkdir", "abs", "lower", "upper", "map", "jsonp", "check_type", "exit", "type", "convert", "list", "span", "array", "pair", "append", "system", "keys", "source", "run", "runf", "sort", "id", "ternary", "rand", "input", "glob", "env", "range", "fmt", "chdir", "split", "join", "cp", "mv", "rm", "pop", "itc", "cti", "has", "index", "replace", "re_match", "re_find", "rget", "rpost", "arrm", "value", "sub", "html_set_inner"}
 	fs := []Function{}
 	for _, str := range strs {
 		fs = append(fs, Function{Name: str})
