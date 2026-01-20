@@ -13,6 +13,7 @@ import (
 	"minimum/bytecode"
 	"minimum/input"
 	"net/http"
+	"net/rpc"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -20,6 +21,7 @@ import (
 	"runtime"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -3004,6 +3006,20 @@ func (in *Interpreter) Run(node_name string) bool {
 				if err {
 					return err
 				}
+			case "library":
+				err := in.CheckArgN(action, 1, 1)
+				if err {
+					return true
+				}
+				err = in.CheckDtype(action, 0, STR)
+				if err {
+					return true
+				}
+				go_err := in.LaunchExe(in.NamedStr(action.First()), "")
+				if go_err != nil {
+					in.Error(action, go_err.Error(), "rpc")
+					return true
+				}
 			case "run":
 				err := in.CheckArgN(action, 1, 1)
 				if err {
@@ -3782,8 +3798,10 @@ func (in *Interpreter) Run(node_name string) bool {
 					if err {
 						return err
 					}
+					CloseAllRpc()
 					os.Exit(int(in.NamedInt(action.First()).Int64()))
 				}
+				CloseAllRpc()
 				os.Exit(0)
 			case "system":
 				err := in.CheckArgN(actions[focus], 1, 1)
@@ -3800,7 +3818,7 @@ func (in *Interpreter) Run(node_name string) bool {
 				case "arch":
 					in.Save(actions[focus].Target, runtime.GOARCH)
 				case "version":
-					in.Save(actions[focus].Target, "4.3.5")
+					in.Save(actions[focus].Target, "4.3.6")
 				case "args":
 					l := bytecode.List{}
 					for _, arg := range os.Args {
@@ -4298,8 +4316,18 @@ func (in *Interpreter) Run(node_name string) bool {
 					f_in.Destroy()
 					// user functions end
 				} else {
-					in.Error(actions[focus], "Undeclared function!", "undeclared")
-					return true
+					_, ok := functionMap[action.Type]
+					if !ok {
+						in.Error(actions[focus], "Undeclared function!", "undeclared")
+						return true
+					} else {
+						outputs := in.LibFunc(action)
+						if len(outputs.Ids) == 1 {
+							in.Save(action.Target, in.GetAnyRef(outputs.Ids[0]))
+						} else {
+							in.Save(action.Target, outputs)
+						}
+					}
 				}
 			}
 		}
@@ -5070,7 +5098,7 @@ func (in *Interpreter) JsonPair(obj []byte) bytecode.Pair {
 	return p
 }
 
-func (in *Interpreter) JsonList(obj []byte) bytecode.List {
+func (in *Interpreter) JsonListOld(obj []byte) bytecode.List {
 	var val []any
 	json.Unmarshal(obj, &val)
 	l := bytecode.List{}
@@ -5094,3 +5122,142 @@ func (in *Interpreter) JsonList(obj []byte) bytecode.List {
 	}
 	return l
 }
+
+func (in *Interpreter) JsonList(obj []byte) bytecode.List {
+	var val []any
+	if err := json.Unmarshal(obj, &val); err != nil {
+		return bytecode.List{}
+	}
+
+	l := bytecode.List{}
+
+	for _, a := range val {
+		switch v := a.(type) {
+
+		case float64:
+			// JSON numbers are always float64
+			if math.Trunc(v) == v {
+				ListAppend(&l, in, big.NewInt(int64(v)))
+			} else {
+				ListAppend(&l, in, big.NewFloat(v))
+			}
+
+		case string:
+			ListAppend(&l, in, v)
+
+		case []any:
+			b, _ := json.Marshal(v)
+			ListAppend(&l, in, in.JsonList(b))
+
+		case map[string]any:
+			b, _ := json.Marshal(v)
+			ListAppend(&l, in, in.JsonPair(b))
+
+		case bool:
+			ListAppend(&l, in, v)
+
+		case nil:
+			// explicit Nothing
+			ListAppend(&l, in, nil)
+
+		default:
+			ListAppend(&l, in, v)
+		}
+	}
+
+	return l
+}
+
+// rpc START
+
+type LibFunc struct {
+	Path string
+	Name string
+}
+
+var (
+	mu          sync.Mutex
+	clientMap   = make(map[string]*rpc.Client)
+	functionMap = make(map[string]LibFunc)
+	libPort     = 5001
+)
+
+func (in *Interpreter) LaunchExe(path, port string) error {
+	mu.Lock()
+	defer mu.Unlock()
+	if port == "" {
+		port = fmt.Sprintf("%d", libPort)
+		libPort++
+	}
+	if runtime.GOOS == "windows" {
+		path += ".exe"
+	}
+	if !bytecode.Has(os.Args, "-importless") {
+		cmd := exec.Command(path, port)
+		if err := cmd.Start(); err != nil {
+			return err
+		}
+		time.Sleep(time.Duration(250) * time.Millisecond)
+	}
+	var err error
+	ip_port := "127.0.0.1:" + port
+	clientMap[path], err = rpc.Dial("tcp", ip_port)
+	if err != nil {
+		return err
+	}
+	cwd, _ := os.Getwd()
+	args := bytecode.CallArgs{
+		Args: cwd,
+	}
+
+	var reply bytecode.CallReply
+	err = clientMap[path].Call("Library.Init", args, &reply)
+	if err != nil {
+		return err
+	}
+	for _, fn := range strings.Split(reply.Result, ",") {
+		splitted := strings.Split(fn, ":") // "lib_exit:Library.Exit"
+		public_name, internal_name := splitted[0], splitted[1]
+		functionMap[public_name] = LibFunc{Path: path, Name: internal_name}
+		f := &bytecode.Function{Name: public_name}
+		in.Save(public_name, f)
+	}
+	return nil
+}
+
+func (in *Interpreter) LibFunc(act bytecode.Action) bytecode.List {
+	ftype := act.Type
+	lf := functionMap[ftype]
+	client := clientMap[lf.Path]
+	var reply bytecode.CallReply
+	var l bytecode.List
+	for _, v := range act.Variables {
+		ListAppend(&l, in, in.GetAny(string(v)))
+	}
+	jsonb, _ := json.Marshal(in.ListToJson(l))
+	jsonstr := string(jsonb)
+	args := bytecode.CallArgs{
+		Args: jsonstr,
+	}
+	err := client.Call(lf.Name, args, &reply)
+	if err != nil {
+		panic(err)
+	}
+	return in.JsonList([]byte(reply.Result))
+}
+
+func CloseAllRpc() {
+	mu.Lock()
+	args := bytecode.CallArgs{
+		Args: "",
+	}
+
+	var reply bytecode.CallReply
+	for path := range clientMap {
+		_ = clientMap[path].Call("Library.Exit", args, &reply)
+		clientMap[path].Close()
+	}
+	mu.Unlock()
+}
+
+// rpc END

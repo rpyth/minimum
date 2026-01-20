@@ -248,6 +248,7 @@ func timer(name string) func() {
 }
 
 func main() {
+	defer inter.CloseAllRpc()
 	if is_safe {
 		inter.IsSafe = true
 	}

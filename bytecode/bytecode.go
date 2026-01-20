@@ -718,16 +718,24 @@ func GetActs(tokens []Token, sl *SourceLine) []Action {
 	}
 	var targets_tok [][]Token
 	if eq_id > -1 {
-		targets_tok = CommaArgs(tokens[:eq_id])
-		for _, targ_tok := range targets_tok {
-			if len(targ_tok) == 1 { // if it is a single var name
-				targets = append(targets, targ_tok[0].Value)
-			} else {
-				// TODO: make less hacky
-				targets = append(targets, targ_tok[0].Value)
+		if len(tokens) > 0 && Has(tokens, Token{"DOLL", ""}) { // if it's a console call (with assignment)
+			dind := Index(tokens, Token{"DOLL", ""})
+			if Has(tokens[:dind], Token{"EQ", ""}) || Has(tokens[:dind], Token{"PEQ", ""}) {
+				targets = append(targets, tokens[0].Value)
+				tokens = Unlink(tokens[dind:])
 			}
+		} else { // if it's anything else
+			targets_tok = CommaArgs(tokens[:eq_id])
+			for _, targ_tok := range targets_tok {
+				if len(targ_tok) == 1 { // if it is a single var name
+					targets = append(targets, targ_tok[0].Value)
+				} else {
+					// TODO: make less hacky
+					targets = append(targets, targ_tok[0].Value)
+				}
+			}
+			tokens = Unlink(tokens[eq_id+1:])
 		}
-		tokens = Unlink(tokens[eq_id+1:])
 	}
 	// finding targets end
 	done := false
@@ -735,7 +743,7 @@ func GetActs(tokens []Token, sl *SourceLine) []Action {
 		switch {
 		case strings.HasPrefix(strings.TrimSpace(sl.Source), "$") || len(tokens) > 0 && Has(tokens, Token{"DOLL", ""}):
 			actions = append(actions, Action{TempName(), "$", []Variable{}, sl})
-			if len(targets) > 0 {
+			if len(targets) > 0 { // used to be `len(targets) > 0`
 				actions[len(actions)-1].Type = "$$"
 				actions[len(actions)-1].Target = targets[0]
 			}
@@ -1406,8 +1414,21 @@ type Function struct {
 	Node   string
 }
 
+// rpc START
+
+type CallArgs struct {
+	Args string
+}
+
+type CallReply struct {
+	Result string
+	Error  string
+}
+
+// rpc END
+
 func GenerateFuns() []Function {
-	strs := []string{"print", "out", "where", "len", "stats", "except", "sleep", "read", "write", "remove", "isdir", "mkdir", "abs", "lower", "upper", "map", "jsonp", "check_type", "exit", "type", "convert", "list", "span", "array", "pair", "append", "system", "keys", "source", "run", "runf", "sort", "id", "ternary", "rand", "input", "glob", "env", "range", "fmt", "chdir", "split", "join", "cp", "mv", "rm", "pop", "itc", "cti", "has", "index", "replace", "re_match", "re_find", "rget", "rpost", "arrm", "value", "sub", "html_set_inner"}
+	strs := []string{"print", "out", "where", "len", "stats", "except", "sleep", "read", "write", "remove", "isdir", "mkdir", "abs", "lower", "upper", "map", "jsonp", "check_type", "exit", "type", "convert", "list", "span", "array", "pair", "append", "system", "keys", "source", "library", "run", "runf", "sort", "id", "ternary", "rand", "input", "glob", "env", "range", "fmt", "chdir", "split", "join", "cp", "mv", "rm", "pop", "itc", "cti", "has", "index", "replace", "re_match", "re_find", "rget", "rpost", "arrm", "value", "sub", "html_set_inner"}
 	fs := []Function{}
 	for _, str := range strs {
 		fs = append(fs, Function{Name: str})
