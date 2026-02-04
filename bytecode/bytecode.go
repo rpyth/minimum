@@ -41,6 +41,8 @@ func Has[T comparable](series []T, what T) bool {
 	return false
 }
 
+// returns -1 by default (when the item is not found), otherwise
+// the actual index is returned
 func Index[T comparable](series []T, what T) int {
 	for n, item := range series {
 		if item == what {
@@ -788,25 +790,38 @@ func GetActs(tokens []Token, sl *SourceLine) []Action {
 			tokens = []Token{{"WORD", t}}
 		case len(tokens) > 1 && tokens[0].Type == "WORD" && tokens[0].Value == "process" && tokens[len(tokens)-1].Type == "LINK" && tokens[len(tokens)-2].Type == "COL":
 			args := CommaArgs(tokens[1 : len(tokens)-2])
-			//arg := args[0]
-			var arg []Token
-			for n, alet := range args {
-				if len(alet) == 3 && alet[1].Type == "R_ARR" {
-					arg = alet
-					args = append(args[:n], args[n+1:]...)
-					break
+			if len(args) > 0 && Has(args[0], Token{"R_ARR", ""}) {
+				// in case the right arrow is present
+				var arg []Token
+				for n, alet := range args {
+					if len(alet) == 3 && alet[1].Type == "R_ARR" {
+						arg = alet
+						args = append(args[:n], args[n+1:]...)
+						break
+					}
 				}
+				frozen := []Variable{}
+				for _, a := range args {
+					frozen = append(frozen, Variable(a[0].Value))
+				}
+				ind := Index(arg, Token{"R_ARR", ""})
+				left, right := arg[:ind], arg[ind+1:]
+				targ := right[0].Value
+				targ_node := tokens[len(tokens)-1].Value
+				actions = append(actions, Action{targ_node, "process", append([]Variable{Variable(left[0].Value), Variable(targ)}, frozen...), sl})
+				tokens = []Token{{"WORD", targ}}
+			} else {
+				// when the process just needs to start
+				// Nothing is copied into Nothing in here
+				frozen := []Variable{}
+				for _, a := range args {
+					frozen = append(frozen, Variable(a[0].Value))
+				}
+				targ := "Nothing"
+				targ_node := tokens[len(tokens)-1].Value
+				actions = append(actions, Action{targ_node, "process", append([]Variable{Variable("Nothing"), Variable(targ)}, frozen...), sl})
+				tokens = []Token{{"WORD", targ}}
 			}
-			frozen := []Variable{}
-			for _, a := range args {
-				frozen = append(frozen, Variable(a[0].Value))
-			}
-			ind := Index(arg, Token{"R_ARR", ""})
-			left, right := arg[:ind], arg[ind+1:]
-			targ := right[0].Value
-			targ_node := tokens[len(tokens)-1].Value
-			actions = append(actions, Action{targ_node, "process", append([]Variable{Variable(left[0].Value), Variable(targ)}, frozen...), sl})
-			tokens = []Token{{"WORD", targ}}
 		case len(tokens) > 1 && tokens[0].Type == "WORD" && tokens[0].Value == "error" && tokens[len(tokens)-1].Type == "LINK" && tokens[len(tokens)-2].Type == "COL":
 			args := CommaArgs(tokens[1 : len(tokens)-2])
 			target := tokens[len(tokens)-1].Value
