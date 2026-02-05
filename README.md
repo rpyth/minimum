@@ -1,6 +1,7 @@
 
 # Minimum Programming Language
 **Minimum** is a simple scripting language written in Go. It features dynamic typing, garbage collection and 12 built-in data types. The project is aiming to provide a language similar to Python, with the benefits of easy parallel processing and cross-platform usage that come with Go.
+Recommended editor for Minimum is located in the `editor` folder of the repository.
 
 ## Documentation
 ### Data Types
@@ -50,13 +51,63 @@ func sqrt x:
 ```
 Functions create a local variable space upon being run, copying values from the outer scope. Upon finishing, the inner scope values are destroyed.
 The list of functions:
-- `fmt`, a function that replicates f-strings in Python, replaces expressions or variables within curly braces with their values represented by a string
-- `ternary`, a simple function that accepts a bool and two values of any type; if the bool is true, the function returns the second value, otherwise - the third value is returned
-- `convert`, universal conversion function that accepts two inputs: a value to convert and an example, the example's value is irrelevant to the operation
+- `print`: accepts any number of inputs of any type (`!print a, b, c`), prints them space-separated and adds a newline, returns nothing
+- `out`: accepts any number of inputs of any type (`!out a, b, c`), prints them space-separated without a newline, returns nothing
+- `replace`: accepts 3–4 string inputs (`!replace str, str, str[, int]`), replaces occurrences of the second string inside the first with the third optionally limited by count, returns a single str
+- `source`: accepts 1 string input (`!source path`), loads a file, compiles and executes it as Minimum code, returns nothing
+- `library`: accepts 1 string input (`!library path`), launches an external executable/library process for RPC use, returns nothing
+- `run`: accepts 1 string input (`!run code`), compiles and executes the provided code string, returns nothing
+- `runf`: accepts 1 string input (`!runf code`), executes code in isolation and returns the final expression result, returns any type
+- `isdir`: accepts 1 string input (`!isdir path`), checks whether the path is a directory, returns a bool
+- `abs`: accepts 1 input (`!abs value`), returns numeric absolute value for int/float or absolute filesystem path for string, returns same type as input
+- `ternary`: accepts 3 inputs (`!ternary bool, a, b`), returns the second value if condition is true otherwise the third, returns any type
+- `fmt`: accepts 1 string input (`!fmt str`), formats/interpolates the string using Minimum formatting rules, returns a str
+- `lower`: accepts 1 string input (`!lower str`), converts all characters to lowercase, returns a str
+- `upper`: accepts 1 string input (`!upper str`), converts all characters to uppercase, returns a str
+- `map`: accepts a list and a function (`!map list, func`), applies the function to each element and collects the results, returns a list
+- `env`: accepts 1–2 string inputs (`!env name[, value]`), gets or sets an environment variable, returns the value when reading otherwise nothing
+- `html_set_inner`: accepts 2 string inputs (`!html_set_inner selector, html`), sets the inner HTML of an element in the runtime environment, returns nothing
+- `convert`: accepts 2 inputs (`!convert value, typeExample`), converts the first value to the type of the second, returns the converted value
+- `value`: accepts 1 id input (`!value id`), dereferences an ID and retrieves the referenced value, returns any type
+- `read`: accepts 1 string input (`!read path`), reads a file as raw bytes, returns a byte span
+- `write`: accepts 2 inputs (`!write path, data`), writes a string or byte span to a file, returns nothing
+- `mkdir`: accepts 1 string input (`!mkdir path`), creates a directory and parents if needed, returns nothing
+- `remove`: accepts 1 string input (`!remove path`), deletes a file or directory, returns nothing
+- `len`: accepts 1 input (`!len value`), computes length of a string, list, or span, returns an int
+- `sleep`: accepts 1 numeric input (`!sleep seconds`), pauses execution for the specified number of seconds, returns nothing
+- `range`: accepts 1–3 integer inputs (`!range end` or `!range start, end[, step]`), generates a sequence of integers, returns an int span
+- `span`: accepts 1 list input (`!span list`), copies list elements into contiguous memory, returns a span
+- `rand`: accepts 2 numeric inputs (`!rand min, max`), generates a random number between the bounds, returns a float
+- `sort`: accepts 1–2 inputs (`!sort list[, func]`), sorts elements optionally using a key function, returns a list
+- `list`: accepts any number of inputs (`!list a, b, c`), constructs a list from the provided values, returns a list
+- `input`: accepts 1 string input (`!input prompt`), shows a prompt and reads a line from the user, returns a str
+- `exit`: accepts 0–1 integer inputs (`!exit [code]`), terminates the program with the given exit code, returns nothing
+- `system`: accepts 1 string input (`!system key`), retrieves runtime information such as os, arch, version, args, cwd, funcs, or vars, returns a value depending on key
+- `keys`: accepts 1 pair input (`!keys pair`), extracts all keys from a pair/dictionary, returns a list
+- `chdir`: accepts 1 string input (`!chdir path`), changes the current working directory, returns nothing
+- `glob`: accepts 1 string input (`!glob pattern`), returns all filesystem paths matching a glob pattern, returns a list of strings
+- `rget`: accepts 1 string input (`!rget url`), performs an HTTP GET request, returns a pair containing status code and body
+- `jsonp`: accepts 1 string input (`!jsonp json`), parses JSON text into a pair/dictionary structure, returns a pair
+- `rpost`: accepts 2 inputs (`!rpost url, pair`), sends an HTTP POST request with JSON body, returns a pair containing status code and body
+- `split`: accepts 2 string inputs (`!split str, separator`), splits a string by the separator, returns a list of strings
+- `join`: accepts a list and a string (`!join list, separator`), concatenates string elements with the separator, returns a str
+- `cti`: accepts 1 string input (`!cti str`), converts the first character to its Unicode integer codepoint, returns an int
+- `itc`: accepts 1 integer input (`!itc int`), converts an integer codepoint to a single character string, returns a str
+- `stats`: accepts 1 string input (`!stats path`), retrieves file metadata like name, size, and timestamps, returns a pair
+- `id`: accepts 1–2 inputs (`!id name` or `!id value, id`), gets a variable reference ID or assigns through an ID, returns an id or nothing
+- `append`: accepts 2 inputs (`!append list_or_span, value`), adds an element to the end of the collection, returns a new list or span
+- `has`: accepts 2 inputs (`!has collection, value`), checks whether the value exists inside a string, list, or span, returns a bool
+- `where`: accepts 2 inputs (`!where collection, value`), finds the index of the first matching value or substring, returns an int
+- `check_type`: accepts 2 inputs (`!check_type value, str`), verifies the value matches the provided type name and raises an error if not, returns nothing
+- `type`: accepts 1 input (`!type value`), returns the type name of the value as text, returns a str
+
 ## Interpreter Usage
 The interpreter is a single binary, which can be built as `minimum.exe` on Windows using the `go build -o minimum.exe -ldflags='-w -s' .` command. Whenever launched, Minimum searches the launch arguments to contain a valid file path. If found, the program reads it as a utf-8 encoded text file. It is recommended to use the `.min` extension for Minimum scripts. Minimum only accepts spaces for indentation.
 Special flags:
 - `-debug`, prints the program's bytecode along with execution time
+- `-server 5000`, starts the Minimum server on the specified port (5000, for example), set the compile variable like ?compile=1 in order to save provided code after execution; pass code via the "code" filed in your json request
+- `-safe`, prevents the program from using the `!write` function
+- `-source`, shows the source code of the first file provided to the interpreter, useful for demonstration purposes
 
 ## Examples
 FizzBuzz:
