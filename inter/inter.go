@@ -117,6 +117,8 @@ func (in *Interpreter) SpawnProcess(node string, targetList, childItem string, c
 		child.Save(c, in.GetAny(c))
 		if in.Type(c) == PAIR {
 			child.Save(c, child.CopyPair(c, in))
+		} else if in.Type(c) == SPAN {
+			child.Save(c, child.CopySpan(c, in))
 		} else if in.Type(c) == LIST {
 			child.Save(c, child.CopyList(c, in))
 		}
@@ -1370,6 +1372,51 @@ func PowInt(number, power *big.Int) *big.Int {
 	return result
 }
 
+func (in *Interpreter) CopySpan(source_name string, og *Interpreter) bytecode.Span {
+	source := og.NamedSpan(source_name)
+	a := bytecode.Span{Dtype: source.Dtype, Length: source.Length} // in.NewSpan(int(source.Length), source.Dtype) // a is array because spans are very array-like
+	switch source.Dtype {
+	case INT:
+		a.Start = uint64(len(in.V.Ints))
+		series := og.V.Ints[source.Start : source.Start+source.Length]
+		in.V.Ints = append(in.V.Ints, series...)
+	case FLOAT:
+		a.Start = uint64(len(in.V.Floats))
+		series := og.V.Floats[source.Start : source.Start+source.Length]
+		in.V.Floats = append(in.V.Floats, series...)
+	case BYTE:
+		a.Start = uint64(len(in.V.Bytes))
+		series := og.V.Bytes[source.Start : source.Start+source.Length]
+		in.V.Bytes = append(in.V.Bytes, series...)
+	case BOOL:
+		a.Start = uint64(len(in.V.Bools))
+		series := og.V.Bools[source.Start : source.Start+source.Length]
+		in.V.Bools = append(in.V.Bools, series...)
+	case FUNC:
+		a.Start = uint64(len(in.V.Funcs))
+		series := og.V.Funcs[source.Start : source.Start+source.Length]
+		in.V.Funcs = append(in.V.Funcs, series...)
+	case SPAN:
+		a.Start = uint64(len(in.V.Spans))
+		series := og.V.Spans[source.Start : source.Start+source.Length]
+		in.V.Spans = append(in.V.Spans, series...)
+	case LIST:
+		a.Start = uint64(len(in.V.Lists))
+		series := og.V.Lists[source.Start : source.Start+source.Length]
+		in.V.Lists = append(in.V.Lists, series...)
+	case PAIR:
+		a.Start = uint64(len(in.V.Pairs))
+		series := og.V.Pairs[source.Start : source.Start+source.Length]
+		in.V.Pairs = append(in.V.Pairs, series...)
+	case ID:
+		a.Start = uint64(len(in.V.Ids))
+		series := og.V.Ids[source.Start : source.Start+source.Length]
+		in.V.Ids = append(in.V.Ids, series...)
+	}
+
+	return a
+}
+
 func (in *Interpreter) NewSpan(length int, dtype byte) bytecode.Span {
 	if length == 0 {
 		return bytecode.Span{}
@@ -2015,6 +2062,9 @@ func (in *Interpreter) integrateChildResult(proc *ChildProcess) {
 	} else if tb == LIST {
 		l := in.CopyList(proc.ResultName, proc.Interp)
 		ListAppend(&lst, in, l)
+	} else if tb == SPAN {
+		l := in.CopySpan(proc.ResultName, proc.Interp)
+		ListAppend(&lst, in, l)
 	} else {
 		ListAppend(&lst, in, a)
 	}
@@ -2035,6 +2085,10 @@ func (in *Interpreter) Run(node_name string) bool {
 		action := actions[focus]
 		for _, vv := range action.Variables {
 			if _, ok := in.V.Names[string(vv)]; !ok && !bytecode.Has(protected_actions, action.Type) {
+				if in.Parent == nil {
+					in.Error(action, "Undeclared variable: "+string(vv), "undeclared")
+					return true
+				}
 				interp := in.Parent
 				_, ok = interp.V.Names[string(vv)]
 				for !ok && interp.Parent != nil {
@@ -3387,11 +3441,14 @@ func (in *Interpreter) Run(node_name string) bool {
 				if berr != nil {
 					in.Error(action, berr.Error(), "file")
 				}
-				a := in.NewSpan(len(b), BYTE)
-				for n, bb := range b {
-					in.SpanSet(&a, n, bb)
-				}
-				in.Save(action.Target, a)
+				sp := bytecode.Span{Start: uint64(len(in.V.Bytes)), Length: uint64(len(b)), Dtype: BYTE}
+				in.V.Bytes = append(in.V.Bytes, b...)
+				in.Save(action.Target, sp)
+				// a := in.NewSpan(len(b), BYTE)
+				// for n, bb := range b {
+				//	 in.SpanSet(&a, n, bb)
+				// }
+				// in.Save(action.Target, a)
 			case "write":
 				if IsSafe {
 					in.Error(action, "cannot write to files when in safe mode!", "permission")
@@ -3606,14 +3663,14 @@ func (in *Interpreter) Run(node_name string) bool {
 							}
 							if f_in.V.Slots[f_in.V.Names["_return_"]].Type == LIST {
 								l := in.CopyList("_return_", &f_in)
-								//in.Save(action.Target, l)
+								ListAppend(&mask, in, l)
+							} else if f_in.V.Slots[f_in.V.Names["_return_"]].Type == SPAN {
+								l := in.CopySpan("_return_", &f_in)
 								ListAppend(&mask, in, l)
 							} else if f_in.V.Slots[f_in.V.Names["_return_"]].Type == PAIR {
 								l := in.CopyPair("_return_", &f_in)
-								//in.Save(action.Target, l)
 								ListAppend(&mask, in, l)
 							} else {
-								//in.Save(action.Target, f_in.GetAny("_return_"))
 								ListAppend(&mask, in, f_in.GetAny("_return_"))
 							}
 							f_in.Destroy()
@@ -3663,14 +3720,14 @@ func (in *Interpreter) Run(node_name string) bool {
 							}
 							if f_in.V.Slots[f_in.V.Names["_return_"]].Type == LIST {
 								l := in.CopyList("_return_", &f_in)
-								//in.Save(action.Target, l)
 								ListAppend(&mask, in, l)
 							} else if f_in.V.Slots[f_in.V.Names["_return_"]].Type == PAIR {
 								l := in.CopyPair("_return_", &f_in)
-								//in.Save(action.Target, l)
+								ListAppend(&mask, in, l)
+							} else if f_in.V.Slots[f_in.V.Names["_return_"]].Type == SPAN {
+								l := in.CopySpan("_return_", &f_in)
 								ListAppend(&mask, in, l)
 							} else {
-								//in.Save(action.Target, f_in.GetAny("_return_"))
 								ListAppend(&mask, in, f_in.GetAny("_return_"))
 							}
 							f_in.Destroy()
@@ -3721,14 +3778,14 @@ func (in *Interpreter) Run(node_name string) bool {
 							}
 							if f_in.V.Slots[f_in.V.Names["_return_"]].Type == LIST {
 								l := in.CopyList("_return_", &f_in)
-								//in.Save(action.Target, l)
 								ListAppend(&mask, in, l)
 							} else if f_in.V.Slots[f_in.V.Names["_return_"]].Type == PAIR {
 								l := in.CopyPair("_return_", &f_in)
-								//in.Save(action.Target, l)
+								ListAppend(&mask, in, l)
+							} else if f_in.V.Slots[f_in.V.Names["_return_"]].Type == SPAN {
+								l := in.CopySpan("_return_", &f_in)
 								ListAppend(&mask, in, l)
 							} else {
-								//in.Save(action.Target, f_in.GetAny("_return_"))
 								ListAppend(&mask, in, f_in.GetAny("_return_"))
 							}
 							f_in.Destroy()
@@ -3818,7 +3875,7 @@ func (in *Interpreter) Run(node_name string) bool {
 				case "arch":
 					in.Save(actions[focus].Target, runtime.GOARCH)
 				case "version":
-					in.Save(actions[focus].Target, "4.3.6")
+					in.Save(actions[focus].Target, "4.3.7")
 				case "args":
 					l := bytecode.List{}
 					for _, arg := range os.Args {
@@ -4291,6 +4348,9 @@ func (in *Interpreter) Run(node_name string) bool {
 						} else if in.Type(string(action.Variables[n])) == ID {
 							id := in.NamedId(string(action.Variables[n]))
 							f_in.Save(fn_arg_str, id)
+						} else if in.Type(string(action.Variables[n])) == SPAN {
+							s := f_in.CopySpan(string(action.Variables[n]), in)
+							f_in.Save(fn_arg_str, s)
 						} else {
 							f_in.Save(fn_arg_str, in.GetAny(string(action.Variables[n])))
 						}
@@ -4309,6 +4369,9 @@ func (in *Interpreter) Run(node_name string) bool {
 						in.Save(action.Target, l)
 					} else if f_in.V.Slots[f_in.V.Names["_return_"]].Type == PAIR {
 						l := in.CopyPair("_return_", &f_in)
+						in.Save(action.Target, l)
+					} else if f_in.V.Slots[f_in.V.Names["_return_"]].Type == SPAN {
+						l := in.CopySpan("_return_", &f_in)
 						in.Save(action.Target, l)
 					} else {
 						in.Save(action.Target, f_in.GetAny("_return_"))
@@ -4673,7 +4736,8 @@ func (in *Interpreter) Copy2(og *Interpreter) {
 	for key := range og.V.Names {
 		switch og.V.Slots[og.V.Names[key]].Type {
 		case SPAN:
-			//todo
+			l := in.CopySpan(key, og)
+			in.Save(key, l)
 		case LIST:
 			l := in.CopyList(key, og)
 			in.Save(key, l)
