@@ -1,11 +1,14 @@
 package bytecode
 
 import (
+	"bytes"
 	"fmt"
 	"math/big"
+	"os"
 	"regexp"
 	"strconv"
 	"strings"
+	"text/template"
 	"unicode/utf8"
 )
 
@@ -56,6 +59,90 @@ func Unlink[T any](series []T) []T {
 	empty := []T{}
 	return append(empty, series...)
 }
+
+// MINT START
+func regexToMap(compRegEx *regexp.Regexp, s string) map[string]string {
+	match := compRegEx.FindStringSubmatch(s)
+
+	if match == nil {
+		return nil
+	}
+
+	paramsMap := make(map[string]string)
+	names := compRegEx.SubexpNames()
+
+	for i, name := range names {
+		// Index 0 is the full match, which has an empty name in SubexpNames.
+		// We only want named groups and non-empty matches.
+		if i != 0 && name != "" {
+			paramsMap[name] = match[i]
+		}
+	}
+
+	return paramsMap
+}
+
+func RenderTemplate(tmplStr string, data map[string]string) (string, error) {
+	tmpl, err := template.New("tmpl").Parse(tmplStr)
+	if err != nil {
+		return "", err
+	}
+
+	var buf bytes.Buffer
+	err = tmpl.Execute(&buf, data)
+	if err != nil {
+		return "", err
+	}
+
+	return buf.String(), nil
+}
+
+var RegTs []RegTemp
+
+type RegTemp struct {
+	RegEx    *regexp.Regexp
+	Template string
+}
+
+func FillMinT(fname string) {
+	b, _ := os.ReadFile(fname)
+	entries := strings.Split(strings.ReplaceAll(string(b), "\r\n", "\n"), "#")
+	for _, entry := range entries {
+		lines := strings.Split(entry, "\n")
+		if lines[0] == "" {
+			continue
+		}
+		rt := RegTemp{regexp.MustCompile(lines[0]), strings.Join(lines[1:], "\n")}
+		RegTs = append(RegTs, rt)
+	}
+}
+
+func Pad(reference, target string) string {
+	n := 0
+	for n < len(reference) && reference[n] == ' ' {
+		n++
+	}
+	splitted := strings.Split(target, "\n")
+	for ln := range splitted {
+		splitted[ln] = strings.Repeat(" ", n) + splitted[ln]
+	}
+	return strings.Join(splitted, "\n")
+}
+
+func RenderT(line string) string {
+	for _, rt := range RegTs {
+		if rt.RegEx.MatchString(line) {
+			m := regexToMap(rt.RegEx, line)
+			result, err := RenderTemplate(Pad(line, rt.Template), m)
+			if err == nil {
+				return result
+			}
+		}
+	}
+	return line
+}
+
+// MINT END
 
 type MinPtr struct {
 	Addr uint64
@@ -1338,6 +1425,7 @@ func GetCode(source string) map[string][]Action {
 		} else {
 			buffer = append(buffer, line)
 			part := CodePart{Line: strings.Join(trim_all(Unlink(buffer)), "\n"), LineOG: fill_strings(strings.Join(trim_all(Unlink(buffer)), "\n"), string_map), Indentation: GetInd(strings.Join(buffer, "\n")), N: ln - (len(buffer) - 1)}
+			part.Line = RenderT(part.Line) // EXPERIMENTAL ###
 			// part := CodePart{strings.Join(trim_all(buffer), "\n"), fill_strings(strings.Join(trim_all(buffer), "\n"), string_map), GetInd(strings.Join(buffer, "\n")), ln - (len(buffer) - 1), ""} //Line{fill_strings(strings.Join(buffer, "\n"), string_map), strings.Join(trim_all(buffer), ""), ln}
 			parts = append(parts, part)
 			buffer = []string{}

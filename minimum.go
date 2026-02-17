@@ -228,6 +228,7 @@ var is_debug bool
 var is_safe bool
 var is_source bool
 var is_server bool
+var uses_template bool
 var error_message string
 var error_type string
 
@@ -238,6 +239,7 @@ func init() {
 	is_safe = bytecode.Has(os.Args, "-safe")
 	is_source = bytecode.Has(os.Args, "-source")
 	is_server = bytecode.Has(os.Args, "-server")
+	uses_template = bytecode.Has(os.Args, "-template")
 }
 
 func timer(name string) func() {
@@ -251,6 +253,16 @@ func main() {
 	defer inter.CloseAllRpc()
 	if is_safe {
 		inter.IsSafe = true
+	}
+	if uses_template {
+		var mint string
+		for n, arg := range os.Args {
+			if arg == "-template" {
+				mint = os.Args[n+1]
+				break
+			}
+		}
+		bytecode.FillMinT(mint)
 	}
 	if is_server {
 		if fname := find_file_main(os.Args); fname != "" {
