@@ -6,6 +6,17 @@ import os
 import zlib, pickle
 from icon import icon
 from multiprocessing import freeze_support, Process
+import ctypes
+
+try:
+    # Windows 8.1 and later
+    ctypes.windll.shcore.SetProcessDpiAwareness(2) 
+except AttributeError:
+    try:
+        # Windows 7
+        ctypes.windll.user32.SetProcessDPIAware()
+    except AttributeError:
+        pass
 
 def to_tk(text, ind):
     lines = 1

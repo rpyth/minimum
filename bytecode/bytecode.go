@@ -362,7 +362,7 @@ func oop(tokens []Token) []Token {
 
 func Tokenize(sourcestr string) []Token {
 	reg_const := regexp.MustCompile(`^(true|false|(-?[0-9]+\.[0-9]+)|(-?[0-9]+)|(b\.[0-9]+)|".*")$`)
-	constants := map[string]string{"$": "DOLL", ",": "COMM", ".": "DOT", "'": "SUB", " or ": "OR", " and ": "AND", "not ": "NOT", ":": "COL", "}": "C_CUR", "{": "O_CUR", "]": "C_BR", "[": "O_BR", ")": "C_PAR", "(": "O_PAR", "!": "ACT", "++": "PP", "--": "MM", "+": "PLUS", "->": "R_ARR", "-": "MINUS", "*": "MUL", "//": "DDIV", "/": "DIV", "^": "POW", "%": "MOD", "<": "LESS", ">": "GREAT", "==": "ISEQ", "!=": "NISEQ", "<-": "L_ARR", "&=": "PEQ", "=": "EQ"}
+	constants := map[string]string{"$": "DOLL", ",": "COMM", ".": "DOT", "'": "SUB", " or ": "OR", " and ": "AND", "not ": "NOT", ":": "COL", "}": "C_CUR", "{": "O_CUR", "]": "C_BR", "[": "O_BR", ")": "C_PAR", "(": "O_PAR", "!": "ACT", "++": "PP", "--": "MM", "+": "PLUS", "->": "R_ARR", "-": "MINUS", "*": "MUL", "//": "DDIV", "/": "DIV", "^": "POW", "%": "MOD", "<": "LESS", ">": "GREAT", "==": "ISEQ", "!=": "NISEQ", "<-": "L_ARR", "&=": "PEQ", "=": "EQ", "...": "TDOT"}
 	focus := 0
 	output := []Token{}
 	buffer := ""
@@ -1185,6 +1185,8 @@ func GetActs(tokens []Token, sl *SourceLine) []Action {
 			targ := TempName()
 			actions = append(actions, Action{targ, "return", vs, sl})
 			tokens = []Token{{"WORD", targ}} //append(tokens[:ind], []Token{{"WORD", targ}}...)
+		case len(tokens) == 1 && tokens[0].Type == "TDOT":
+			tokens = []Token{}
 		case len(tokens) == 2 && tokens[0].Type == "WORD" && (tokens[1].Type == "PP" || tokens[1].Type == "MM"):
 			t := tokens[0].Value
 			act := Action{t, ternary(tokens[1].Type == "PP", "++", "--"), []Variable{Variable(tokens[0].Value)}, sl}
