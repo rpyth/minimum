@@ -1494,7 +1494,7 @@ func (in *Interpreter) SpanSet(s *bytecode.Span, index int, item any) error {
 	switch v := item.(type) {
 	case *big.Int:
 		if s.Dtype == INT {
-			in.V.Ints[s.Start+uint64(index)] = v
+			in.V.Ints[s.Start+uint64(index)].Set(v)
 		} else {
 			return fmt.Errorf("cannot append item with type code %s to span with type code %s", types[INT], types[s.Dtype])
 		}
@@ -1742,7 +1742,7 @@ func (in *Interpreter) CompareLess(id0, id1 *bytecode.MinPtr) (bool, error) {
 		// String comparison
 		s0 := in.GetAnyRef(id0).(string)
 		s1 := in.GetAnyRef(id1).(string)
-		return s0 < s1, nil
+		return s0 <= s1, nil
 
 	} else if in.V.Slots[id0.Addr].Type == LIST && in.V.Slots[id1.Addr].Type == LIST {
 		// List comparison - compare element by element
@@ -1779,7 +1779,7 @@ func (in *Interpreter) CompareLess(id0, id1 *bytecode.MinPtr) (bool, error) {
 
 	} else {
 		type_map := map[byte]string{NOTH: "noth", INT: "int", FLOAT: "float", BYTE: "byte", STR: "str", FUNC: "func", SPAN: "span", ID: "id", LIST: "list", BOOL: "bool", PAIR: "pair", ARR: "arr"}
-		return false, fmt.Errorf("impossible comparison in sort function: #%d (%s) against #%d (%s)", id0, type_map[in.V.Slots[id0.Addr].Type], id1, type_map[in.V.Slots[id1.Addr].Type])
+		return false, fmt.Errorf("impossible comparison in sort function: %s (%s) against %s (%s)", id0.String(), type_map[in.V.Slots[id0.Addr].Type], id1.String(), type_map[in.V.Slots[id1.Addr].Type])
 	}
 }
 
@@ -3871,23 +3871,26 @@ func (in *Interpreter) Run(node_name string) bool {
 				}
 				switch in.NamedStr(string(actions[focus].Variables[0])) {
 				case "os":
-					in.Save(actions[focus].Target, runtime.GOOS)
+					in.Save(action.Target, runtime.GOOS)
 				case "arch":
-					in.Save(actions[focus].Target, runtime.GOARCH)
+					in.Save(action.Target, runtime.GOARCH)
+				case "exe":
+					exe, _ := os.Executable()
+					in.Save(action.Target, exe)
 				case "version":
-					in.Save(actions[focus].Target, "4.3.7")
+					in.Save(action.Target, "4.3.7")
 				case "args":
 					l := bytecode.List{}
 					for _, arg := range os.Args {
 						ListAppend(&l, in, arg)
 					}
-					in.Save(actions[focus].Target, l)
+					in.Save(action.Target, l)
 				case "cwd":
 					wd, err := os.Getwd()
 					if err != nil {
 						in.Error(action, err.Error(), "sys")
 					}
-					in.Save(actions[focus].Target, wd)
+					in.Save(action.Target, wd)
 				case "file":
 					in.Save(action.Target, ternary(in.File != nil, *in.File, ""))
 				case "funcs":
