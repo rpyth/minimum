@@ -27,6 +27,36 @@ const (
 	SPAN
 )
 
+func TypeStr(t byte) string {
+	switch t {
+	case NOTH:
+		return "noth"
+	case INT:
+		return "int"
+	case FLOAT:
+		return "float"
+	case STR:
+		return "str"
+	case ARR:
+		return "arr"
+	case LIST:
+		return "list"
+	case PAIR:
+		return "pair"
+	case BOOL:
+		return "bool"
+	case BYTE:
+		return "byte"
+	case FUNC:
+		return "func"
+	case ID:
+		return "id"
+	case SPAN:
+		return "span"
+	}
+	return "noth"
+}
+
 func ternary[T any](cond bool, if_true, if_false T) T {
 	if cond {
 		return if_true
@@ -1533,7 +1563,7 @@ type CallReply struct {
 // rpc END
 
 func GenerateFuns() []Function {
-	strs := []string{"print", "out", "where", "len", "stats", "except", "sleep", "read", "write", "remove", "isdir", "mkdir", "abs", "lower", "upper", "map", "jsonp", "check_type", "exit", "type", "convert", "list", "span", "array", "pair", "append", "system", "keys", "source", "library", "run", "runf", "sort", "id", "ternary", "rand", "input", "glob", "env", "range", "fmt", "chdir", "split", "join", "cp", "mv", "rm", "pop", "itc", "cti", "has", "index", "replace", "re_match", "re_find", "rget", "rpost", "arrm", "value", "sub", "html_set_inner"}
+	strs := []string{"print", "out", "where", "len", "stats", "except", "sleep", "read", "write", "remove", "isdir", "mkdir", "abs", "lower", "upper", "map", "jsonp", "check_type", "exit", "type", "convert", "list", "span", "array", "pair", "append", "system", "keys", "source", "library", "run", "runf", "sort", "id", "ternary", "rand", "input", "glob", "global", "env", "range", "fmt", "chdir", "split", "join", "cp", "mv", "rm", "pop", "itc", "cti", "has", "index", "replace", "re_match", "re_find", "rget", "rpost", "arrm", "value", "sub", "html_set_inner"}
 	fs := []Function{}
 	for _, str := range strs {
 		fs = append(fs, Function{Name: str})
@@ -1567,6 +1597,7 @@ func GenerateFunsFull() []Function {
 		"rand",
 		"input",
 		"glob",
+		"global",
 		"env",
 		"range",
 		"fmt",

@@ -1304,6 +1304,22 @@ func (in *Interpreter) NamedList(vname string) bytecode.List {
 		}
 	}
 }
+func (in *Interpreter) NamedListGlobal(vname string) bytecode.List {
+	og_in := in
+	for {
+		if slot_index, ok := in.V.Names[vname]; ok {
+			if og_in == in {
+				return in.V.Lists[in.V.Slots[slot_index].Index]
+			}
+			break
+		}
+		if in.Parent == nil {
+			return bytecode.List{}
+		}
+		in = in.Parent
+	}
+	return in.CopyList(vname, og_in)
+}
 func (in *Interpreter) NamedArr(vname string) bytecode.Array {
 	if slot_index, ok := in.V.Names[vname]; ok {
 		return in.V.Arrs[in.V.Slots[slot_index].Index]
@@ -1347,6 +1363,21 @@ func (in *Interpreter) NamedId(vname string) *bytecode.MinPtr {
 			return in.Parent.NamedId(vname)
 		} else {
 			return nil
+		}
+	}
+}
+func (in *Interpreter) NamedSave(vname string, value any, og_in *Interpreter) bool { // returns ok
+	if _, ok := in.V.Names[vname]; ok {
+		if in.Type(vname) == LIST {
+			value = in.CopyList(vname, og_in)
+		}
+		in.Save(vname, value)
+		return ok
+	} else {
+		if in.Parent != nil {
+			return in.Parent.NamedSave(vname, value, og_in)
+		} else {
+			return false
 		}
 	}
 }
@@ -2142,6 +2173,16 @@ func (in *Interpreter) Run(node_name string) bool {
 					return true
 				}
 				in.Save(actions[focus].Target, in.NamedStr(o)+in.NamedStr(t))
+			case LIST:
+				l0, l1 := in.NamedList(action.First()), in.NamedList(action.Second())
+				l2 := bytecode.List{}
+				for _, ptr := range l0.Ids {
+					l2.Ids = append(l2.Ids, ptr)
+				}
+				for _, ptr := range l1.Ids {
+					l2.Ids = append(l2.Ids, ptr)
+				}
+				in.Save(action.Target, l2)
 			case BYTE:
 				in.Save(actions[focus].Target, in.NamedByte(o)+in.NamedByte(t))
 			}
@@ -2998,1404 +3039,1409 @@ func (in *Interpreter) Run(node_name string) bool {
 		default:
 			fn := in.NamedFunc(action.Type) //in.GetAny(action.Type).(*bytecode.Function) //in.V.Funcs[in.V.Names[actions[focus].Type]]
 			// TODO: add boundcheck
-			/*
-				if !ok {
-					in.Error(actions[focus], "Undeclared function!", "undeclared")
-				}
-			*/
-			switch fn.Name {
-			case "print", "out":
-				for n, v := range action.Variables {
-					fmt.Print(in.Stringify(in.GetAny(string(v))))
-					if n != len(action.Variables)-1 {
-						fmt.Print(" ")
+			// user functions get opriority now
+			// functions start
+			if fn.Node != "" {
+				// user functions start
+				f_in := Interpreter{V: &Vars{
+					Names: make(map[string]int),
+				}}
+				f_in.Id = rand.Uint64()
+				f_in.Copy(in)
+				for n, fn_arg := range fn.Vars {
+					if n == len(fn.Vars)-1 && len(action.Variables) > len(fn.Vars) {
+						last := bytecode.List{}
+						for _, lastlet := range action.Variables[len(fn.Vars)-1:] {
+							ListAppend(&last, &f_in, in.GetAny(string(lastlet)))
+						}
+						f_in.Save(string(fn_arg), last)
+						continue
 					}
-				}
-				if action.Type == "print" {
-					fmt.Println()
-				}
-			case "replace":
-				err := in.CheckArgN(action, 3, 4)
-				if err {
-					return err
-				}
-				err = in.CheckDtype(action, 0, STR)
-				if err {
-					return err
-				}
-				err = in.CheckDtype(action, 1, STR)
-				if err {
-					return err
-				}
-				err = in.CheckDtype(action, 2, STR)
-				if err {
-					return err
-				}
-				limit := -1
-				if len(action.Variables) > 3 {
-					err = in.CheckDtype(action, 3, INT)
-					if err {
-						return err
-					}
-					limit = int(in.NamedInt(string(action.Variables[3])).Int64())
-				}
-				in.Save(action.Target, strings.Replace(in.NamedStr(action.First()), in.NamedStr(action.Second()), in.NamedStr(action.Third()), limit))
-			case "source":
-				err := in.CheckArgN(action, 1, 1)
-				if err {
-					return true
-				}
-				err = in.CheckDtype(action, 0, STR)
-				if err {
-					return true
-				}
-				b, ferr := os.ReadFile(in.NamedStr(string(action.Variables[0])))
-				if ferr != nil {
-					in.Error(action, ferr.Error(), "sys")
-					return true
-				}
-				in.Compile(string(b), in.NamedStr(string(action.Variables[0])))
-				last_node := fmt.Sprintf("_node_%d", bytecode.NodeN-1)
-				err = in.Run(last_node)
-				if err {
-					return err
-				}
-			case "library":
-				err := in.CheckArgN(action, 1, 1)
-				if err {
-					return true
-				}
-				err = in.CheckDtype(action, 0, STR)
-				if err {
-					return true
-				}
-				go_err := in.LaunchExe(in.NamedStr(action.First()), "")
-				if go_err != nil {
-					in.Error(action, go_err.Error(), "rpc")
-					return true
-				}
-			case "run":
-				err := in.CheckArgN(action, 1, 1)
-				if err {
-					return true
-				}
-				err = in.CheckDtype(action, 0, STR)
-				if err {
-					return true
-				}
-				c := in.NamedStr(action.First())
-				in.Compile(c, "\""+c+"\"")
-				last_node := fmt.Sprintf("_node_%d", bytecode.NodeN-1)
-				err = in.Run(last_node)
-				if err {
-					return err
-				}
-			case "runf": // run & forget
-				err := in.CheckArgN(action, 1, 1)
-				if err {
-					return true
-				}
-				err = in.CheckDtype(action, 0, STR)
-				if err {
-					return true
-				}
-				c := in.NamedStr(action.First())
-				var nodes []string
-				for node_name := range in.Code {
-					nodes = append(nodes, node_name)
-				}
-				in.Compile(c, "\""+c+"\"")
-				last_node := fmt.Sprintf("_node_%d", bytecode.NodeN-1)
-				if len(in.Code[last_node]) > 1 {
-					in.Code[last_node] = in.Code[last_node][:len(in.Code[last_node])-1] // let's remove GC action
-				}
-				err = in.Run(last_node)
-				if err {
-					return err
-				}
-				in.Save(action.Target, in.GetAny(in.Code[last_node][len(in.Code[last_node])-1].Target))
-				for node_name := range in.Code {
-					if !bytecode.Has(nodes, node_name) {
-						delete(in.Code, node_name)
-					}
-				}
-			case "isdir":
-				err := in.CheckArgN(action, 1, 1)
-				if err {
-					return true
-				}
-				err = in.CheckDtype(action, 0, STR)
-				if err {
-					return true
-				}
-				is_dir, go_err := isDirectory(in.NamedStr(action.First()))
-				if go_err != nil {
-					in.Error(action, go_err.Error(), "sys")
-					return true
-				}
-				in.Save(action.Target, is_dir)
-			case "abs":
-				err := in.CheckArgN(action, 1, 1)
-				if err {
-					return true
-				}
-				err = in.CheckDtype(action, 0, STR, INT, FLOAT)
-				if err {
-					return true
-				}
-				if in.Type(action.First()) == STR {
-					path := in.NamedStr(action.First())
-					if filepath.IsAbs(path) {
-						in.Save(action.Target, path)
+					fn_arg_str := string(fn_arg)
+					if in.Type(string(action.Variables[n])) == PAIR {
+						p := f_in.CopyPair(string(action.Variables[n]), in)
+						f_in.Save(fn_arg_str, p)
+					} else if in.Type(string(action.Variables[n])) == LIST {
+						l := f_in.CopyList(string(action.Variables[n]), in)
+						f_in.Save(fn_arg_str, l)
+					} else if in.Type(string(action.Variables[n])) == ID {
+						id := in.NamedId(string(action.Variables[n]))
+						f_in.Save(fn_arg_str, id)
+					} else if in.Type(string(action.Variables[n])) == SPAN {
+						s := f_in.CopySpan(string(action.Variables[n]), in)
+						f_in.Save(fn_arg_str, s)
 					} else {
-						path_abs, go_err := filepath.Abs(path)
+						f_in.Save(fn_arg_str, in.GetAny(string(action.Variables[n])))
+					}
+				}
+				err := f_in.Run(fn.Node)
+				in.ErrSource = f_in.ErrSource
+				if err {
+					return err
+				}
+				_, ok := f_in.V.Names["_return_"]
+				if !ok {
+					f_in.Nothing("_return_")
+				}
+				if f_in.V.Slots[f_in.V.Names["_return_"]].Type == LIST {
+					l := in.CopyList("_return_", &f_in)
+					in.Save(action.Target, l)
+				} else if f_in.V.Slots[f_in.V.Names["_return_"]].Type == PAIR {
+					l := in.CopyPair("_return_", &f_in)
+					in.Save(action.Target, l)
+				} else if f_in.V.Slots[f_in.V.Names["_return_"]].Type == SPAN {
+					l := in.CopySpan("_return_", &f_in)
+					in.Save(action.Target, l)
+				} else {
+					in.Save(action.Target, f_in.GetAny("_return_"))
+				}
+				f_in.Destroy()
+				// user functions end
+			} else {
+				_, ok := functionMap[action.Type]
+				if !ok {
+					// built-ins are here
+					switch fn.Name {
+					case "print", "out":
+						for n, v := range action.Variables {
+							fmt.Print(in.Stringify(in.GetAny(string(v))))
+							if n != len(action.Variables)-1 {
+								fmt.Print(" ")
+							}
+						}
+						if fn.Name == "print" {
+							fmt.Println()
+						}
+					case "replace":
+						err := in.CheckArgN(action, 3, 4)
+						if err {
+							return err
+						}
+						err = in.CheckDtype(action, 0, STR)
+						if err {
+							return err
+						}
+						err = in.CheckDtype(action, 1, STR)
+						if err {
+							return err
+						}
+						err = in.CheckDtype(action, 2, STR)
+						if err {
+							return err
+						}
+						limit := -1
+						if len(action.Variables) > 3 {
+							err = in.CheckDtype(action, 3, INT)
+							if err {
+								return err
+							}
+							limit = int(in.NamedInt(string(action.Variables[3])).Int64())
+						}
+						in.Save(action.Target, strings.Replace(in.NamedStr(action.First()), in.NamedStr(action.Second()), in.NamedStr(action.Third()), limit))
+					case "source":
+						err := in.CheckArgN(action, 1, 1)
+						if err {
+							return true
+						}
+						err = in.CheckDtype(action, 0, STR)
+						if err {
+							return true
+						}
+						b, ferr := os.ReadFile(in.NamedStr(string(action.Variables[0])))
+						if ferr != nil {
+							in.Error(action, ferr.Error(), "sys")
+							return true
+						}
+						in.Compile(string(b), in.NamedStr(string(action.Variables[0])))
+						last_node := fmt.Sprintf("_node_%d", bytecode.NodeN-1)
+						err = in.Run(last_node)
+						if err {
+							return err
+						}
+					case "library":
+						err := in.CheckArgN(action, 1, 1)
+						if err {
+							return true
+						}
+						err = in.CheckDtype(action, 0, STR)
+						if err {
+							return true
+						}
+						go_err := in.LaunchExe(in.NamedStr(action.First()), "")
+						if go_err != nil {
+							in.Error(action, go_err.Error(), "rpc")
+							return true
+						}
+					case "run":
+						err := in.CheckArgN(action, 1, 1)
+						if err {
+							return true
+						}
+						err = in.CheckDtype(action, 0, STR)
+						if err {
+							return true
+						}
+						c := in.NamedStr(action.First())
+						in.Compile(c, "\""+c+"\"")
+						last_node := fmt.Sprintf("_node_%d", bytecode.NodeN-1)
+						err = in.Run(last_node)
+						if err {
+							return err
+						}
+					case "runf": // run & forget
+						err := in.CheckArgN(action, 1, 1)
+						if err {
+							return true
+						}
+						err = in.CheckDtype(action, 0, STR)
+						if err {
+							return true
+						}
+						c := in.NamedStr(action.First())
+						var nodes []string
+						for node_name := range in.Code {
+							nodes = append(nodes, node_name)
+						}
+						in.Compile(c, "\""+c+"\"")
+						last_node := fmt.Sprintf("_node_%d", bytecode.NodeN-1)
+						if len(in.Code[last_node]) > 1 {
+							in.Code[last_node] = in.Code[last_node][:len(in.Code[last_node])-1] // let's remove GC action
+						}
+						err = in.Run(last_node)
+						if err {
+							return err
+						}
+						in.Save(action.Target, in.GetAny(in.Code[last_node][len(in.Code[last_node])-1].Target))
+						for node_name := range in.Code {
+							if !bytecode.Has(nodes, node_name) {
+								delete(in.Code, node_name)
+							}
+						}
+					case "isdir":
+						err := in.CheckArgN(action, 1, 1)
+						if err {
+							return true
+						}
+						err = in.CheckDtype(action, 0, STR)
+						if err {
+							return true
+						}
+						is_dir, go_err := isDirectory(in.NamedStr(action.First()))
 						if go_err != nil {
 							in.Error(action, go_err.Error(), "sys")
 							return true
 						}
-						in.Save(action.Target, path_abs)
-					}
-				} else {
-					switch in.Type(action.First()) {
-					case INT:
-						i := in.NamedInt(action.First())
-						in.Save(action.Target, i.Abs(i))
-					case FLOAT:
-						i := in.NamedFloat(action.First())
-						in.Save(action.Target, i.Abs(i))
-					}
-				}
-			case "ternary":
-				err := in.CheckArgN(action, 3, 3)
-				if err {
-					return true
-				}
-				err = in.CheckDtype(action, 0, BOOL)
-				if err {
-					return true
-				}
-				in.Save(action.Target, ternary(in.NamedBool(string(action.Variables[0])), in.GetAny(string(action.Variables[1])), in.GetAny(string(action.Variables[2]))))
-			case "fmt":
-				err := in.CheckArgN(action, 1, 1)
-				if err {
-					return true
-				}
-				err = in.CheckDtype(action, 0, STR)
-				if err {
-					return true
-				}
-				str := in.Fmt(in.NamedStr(string(action.Variables[0])))
-				in.Save(action.Target, str)
-			case "lower":
-				err := in.CheckArgN(action, 1, 1)
-				if err {
-					return true
-				}
-				err = in.CheckDtype(action, 0, STR)
-				if err {
-					return true
-				}
-				in.Save(action.Target, strings.ToLower(in.NamedStr(action.First())))
-			case "upper":
-				err := in.CheckArgN(action, 1, 1)
-				if err {
-					return true
-				}
-				err = in.CheckDtype(action, 0, STR)
-				if err {
-					return true
-				}
-				in.Save(action.Target, strings.ToUpper(in.NamedStr(action.First())))
-			case "map":
-				err := in.CheckArgN(action, 2, 2)
-				if err {
-					return true
-				}
-				err = in.CheckDtype(action, 0, LIST)
-				if err {
-					return true
-				}
-				err = in.CheckDtype(action, 1, FUNC)
-				if err {
-					return true
-				}
-				l := in.NamedList(action.First())
-				l_out := bytecode.List{}
-				f_in := Interpreter{V: &Vars{
-					Names: make(map[string]int),
-				}}
-				f_in.Copy(in)
-				fn := in.NamedFunc(action.Second())
-				for _, ptr := range l.Ids {
-					a := in.GetAnyRef(ptr)
-					if fn.Node != "" {
-						f_in.Save(string(fn.Vars[0]), a)
-						min_err := f_in.Run(fn.Node)
-						if min_err {
+						in.Save(action.Target, is_dir)
+					case "abs":
+						err := in.CheckArgN(action, 1, 1)
+						if err {
 							return true
 						}
-						if _, ok := f_in.V.Names["_return_"]; ok {
-							ListAppend(&l_out, in, f_in.GetAny("_return_"))
-						} else {
-							in.Nothing("Nothing")
-							nptr := &bytecode.MinPtr{uint64(in.GetSlot("Nothing").Index), in.Id}
-							l_out.Ids = append(l_out.Ids, nptr)
+						err = in.CheckDtype(action, 0, STR, INT, FLOAT)
+						if err {
+							return true
 						}
-						f_in.Destroy()
-						f_in = Interpreter{V: &Vars{
+						if in.Type(action.First()) == STR {
+							path := in.NamedStr(action.First())
+							if filepath.IsAbs(path) {
+								in.Save(action.Target, path)
+							} else {
+								path_abs, go_err := filepath.Abs(path)
+								if go_err != nil {
+									in.Error(action, go_err.Error(), "sys")
+									return true
+								}
+								in.Save(action.Target, path_abs)
+							}
+						} else {
+							switch in.Type(action.First()) {
+							case INT:
+								i := in.NamedInt(action.First())
+								in.Save(action.Target, i.Abs(i))
+							case FLOAT:
+								i := in.NamedFloat(action.First())
+								in.Save(action.Target, i.Abs(i))
+							}
+						}
+					case "ternary":
+						err := in.CheckArgN(action, 3, 3)
+						if err {
+							return true
+						}
+						err = in.CheckDtype(action, 0, BOOL)
+						if err {
+							return true
+						}
+						in.Save(action.Target, ternary(in.NamedBool(string(action.Variables[0])), in.GetAny(string(action.Variables[1])), in.GetAny(string(action.Variables[2]))))
+					case "fmt":
+						err := in.CheckArgN(action, 1, 1)
+						if err {
+							return true
+						}
+						err = in.CheckDtype(action, 0, STR)
+						if err {
+							return true
+						}
+						str := in.Fmt(in.NamedStr(string(action.Variables[0])))
+						in.Save(action.Target, str)
+					case "lower":
+						err := in.CheckArgN(action, 1, 1)
+						if err {
+							return true
+						}
+						err = in.CheckDtype(action, 0, STR)
+						if err {
+							return true
+						}
+						in.Save(action.Target, strings.ToLower(in.NamedStr(action.First())))
+					case "upper":
+						err := in.CheckArgN(action, 1, 1)
+						if err {
+							return true
+						}
+						err = in.CheckDtype(action, 0, STR)
+						if err {
+							return true
+						}
+						in.Save(action.Target, strings.ToUpper(in.NamedStr(action.First())))
+					case "map":
+						err := in.CheckArgN(action, 2, 2)
+						if err {
+							return true
+						}
+						err = in.CheckDtype(action, 0, LIST)
+						if err {
+							return true
+						}
+						err = in.CheckDtype(action, 1, FUNC)
+						if err {
+							return true
+						}
+						l := in.NamedList(action.First())
+						l_out := bytecode.List{}
+						f_in := Interpreter{V: &Vars{
 							Names: make(map[string]int),
 						}}
 						f_in.Copy(in)
-					} else {
-						f_in.Save("_item_", a)
-						act2 := bytecode.Action{}
-						act2.Source = action.Source
-						act2.Target = "_return_"
-						act2.Variables = []bytecode.Variable{("_item_")}
-						act2.Type = fn.Name
-						min_err := f_in.Run(act2.String())
-						if min_err {
+						fn := in.NamedFunc(action.Second())
+						for _, ptr := range l.Ids {
+							a := in.GetAnyRef(ptr)
+							if fn.Node != "" {
+								f_in.Save(string(fn.Vars[0]), a)
+								min_err := f_in.Run(fn.Node)
+								if min_err {
+									return true
+								}
+								if _, ok := f_in.V.Names["_return_"]; ok {
+									ListAppend(&l_out, in, f_in.GetAny("_return_"))
+								} else {
+									in.Nothing("Nothing")
+									nptr := &bytecode.MinPtr{uint64(in.GetSlot("Nothing").Index), in.Id}
+									l_out.Ids = append(l_out.Ids, nptr)
+								}
+								f_in.Destroy()
+								f_in = Interpreter{V: &Vars{
+									Names: make(map[string]int),
+								}}
+								f_in.Copy(in)
+							} else {
+								f_in.Save("_item_", a)
+								act2 := bytecode.Action{}
+								act2.Source = action.Source
+								act2.Target = "_return_"
+								act2.Variables = []bytecode.Variable{("_item_")}
+								act2.Type = fn.Name
+								min_err := f_in.Run(act2.String())
+								if min_err {
+									return true
+								}
+								if _, ok := f_in.V.Names["_return_"]; ok {
+									ListAppend(&l_out, in, f_in.GetAny("_return_"))
+								} else {
+									in.Nothing("Nothing")
+									nptr := &bytecode.MinPtr{uint64(in.GetSlot("Nothing").Index), in.Id}
+									l_out.Ids = append(l_out.Ids, nptr)
+								}
+							}
+						}
+						in.Save(action.Target, l_out)
+						f_in.Destroy()
+					case "env":
+						err := in.CheckArgN(action, 1, 2)
+						if err {
+							return err
+						}
+						if len(action.Variables) == 2 {
+							err = in.CheckDtype(action, 0, STR)
+							if err {
+								return err
+							}
+							err = in.CheckDtype(action, 1, STR)
+							if err {
+								return err
+							}
+							os.Setenv(in.NamedStr(string(action.Variables[0])), in.NamedStr(string(action.Variables[1])))
+						} else {
+							err = in.CheckDtype(action, 0, STR)
+							if err {
+								return err
+							}
+							in.Save(action.Target, os.Getenv(in.NamedStr(string(action.Variables[0]))))
+						}
+					case "html_set_inner":
+						err := in.CheckArgN(action, 2, 2)
+						if err {
+							return err
+						}
+						err = in.CheckDtype(action, 0, STR)
+						if err {
+							return err
+						}
+						err = in.CheckDtype(action, 1, STR)
+						if err {
+							return err
+						}
+						go_err := input.SetInnerHtml(in.NamedStr(action.First()), in.NamedStr(action.Second()))
+						if go_err != nil {
+							in.Error(action, go_err.Error(), "sys")
 							return true
 						}
-						if _, ok := f_in.V.Names["_return_"]; ok {
-							ListAppend(&l_out, in, f_in.GetAny("_return_"))
-						} else {
-							in.Nothing("Nothing")
-							nptr := &bytecode.MinPtr{uint64(in.GetSlot("Nothing").Index), in.Id}
-							l_out.Ids = append(l_out.Ids, nptr)
+					case "convert":
+						err := in.CheckArgN(action, 2, 2)
+						if err {
+							return true
 						}
-					}
-				}
-				in.Save(action.Target, l_out)
-				f_in.Destroy()
-			case "env":
-				err := in.CheckArgN(action, 1, 2)
-				if err {
-					return err
-				}
-				if len(action.Variables) == 2 {
-					err = in.CheckDtype(action, 0, STR)
-					if err {
-						return err
-					}
-					err = in.CheckDtype(action, 1, STR)
-					if err {
-						return err
-					}
-					os.Setenv(in.NamedStr(string(action.Variables[0])), in.NamedStr(string(action.Variables[1])))
-				} else {
-					err = in.CheckDtype(action, 0, STR)
-					if err {
-						return err
-					}
-					in.Save(action.Target, os.Getenv(in.NamedStr(string(action.Variables[0]))))
-				}
-			case "html_set_inner":
-				err := in.CheckArgN(action, 2, 2)
-				if err {
-					return err
-				}
-				err = in.CheckDtype(action, 0, STR)
-				if err {
-					return err
-				}
-				err = in.CheckDtype(action, 1, STR)
-				if err {
-					return err
-				}
-				go_err := input.SetInnerHtml(in.NamedStr(action.First()), in.NamedStr(action.Second()))
-				if go_err != nil {
-					in.Error(action, go_err.Error(), "sys")
-					return true
-				}
-			case "convert":
-				err := in.CheckArgN(action, 2, 2)
-				if err {
-					return true
-				}
-				target_type := in.Type(action.Second())
-				if target_type == in.Type(action.First()) {
-					in.Save(action.Target, in.GetAny(string(action.Variables[0])))
-				} else {
-					switch target_type {
-					case STR:
+						target_type := in.Type(action.Second())
+						if target_type == in.Type(action.First()) {
+							in.Save(action.Target, in.GetAny(string(action.Variables[0])))
+						} else {
+							switch target_type {
+							case STR:
+								switch in.Type(action.First()) {
+								case INT:
+									in.Save(action.Target, in.NamedInt(string(action.Variables[0])).String())
+								case FLOAT:
+									in.Save(action.Target, in.NamedFloat(string(action.Variables[0])).String())
+								case BYTE:
+									in.Save(action.Target, fmt.Sprintf("b.%d", in.NamedByte(string(action.Variables[0]))))
+								case BOOL:
+									in.Save(action.Target, fmt.Sprintf("%v", in.NamedBool(string(action.Variables[0]))))
+								case LIST:
+									l := in.NamedList(action.First())
+									in.Save(action.Target, ListString(&l, in))
+								case SPAN:
+									s := in.NamedSpan(string(action.Variables[0]))
+									switch s.Dtype {
+									case BYTE:
+										if in.NamedStr(action.Second()) == "x" {
+											in.Save(action.Target, fmt.Sprintf("%x", in.V.Bytes[s.Start:s.Start+s.Length]))
+										} else {
+											in.Save(action.Target, string(in.V.Bytes[s.Start:s.Start+s.Length]))
+										}
+									default:
+										in.Save(action.Target, in.StringSpan(s))
+									}
+								}
+							case INT:
+								switch in.Type(action.First()) {
+								case STR:
+									i := big.NewInt(0)
+									i.SetString(in.NamedStr(action.First()), 10)
+									in.Save(action.Target, i)
+								case FLOAT:
+									v, _ := in.NamedFloat(string(action.Variables[0])).Int(big.NewInt(0))
+									in.Save(action.Target, v)
+								case BYTE:
+									v := in.NamedByte(string(action.Variables[0]))
+									in.Save(action.Target, big.NewInt(int64(v)))
+								}
+							case FLOAT:
+								switch in.Type(action.First()) {
+								case INT:
+									v, _ := in.NamedInt(string(action.Variables[0])).Float64()
+									in.Save(action.Target, big.NewFloat(v))
+								case BYTE:
+									in.Save(action.Target, big.NewFloat(float64(in.NamedByte(string(action.Variables[0])))))
+								}
+							case BYTE:
+								switch in.Type(action.First()) {
+								case FLOAT:
+									v, _ := in.NamedFloat(string(action.Variables[0])).Int64()
+									in.Save(action.Target, byte(v))
+								case INT:
+									v := in.NamedInt(string(action.Variables[0])).Int64()
+									in.Save(action.Target, byte(v))
+								}
+							case LIST:
+								switch in.Type(action.First()) {
+								case SPAN:
+									l := bytecode.List{}
+									s := in.NamedSpan(string(action.Variables[0]))
+									for n := s.Start; n < s.Start+s.Length; n++ {
+										var v any = big.NewInt(0)
+										switch s.Dtype { // TODO: add all possible data types
+										case INT:
+											v = in.V.Ints[n]
+										case BYTE:
+											v = in.V.Bytes[n]
+										}
+										ListAppend(&l, in, v)
+									}
+									in.Save(action.Target, l)
+								}
+							case SPAN:
+								switch in.Type(action.First()) {
+								case STR:
+									str := in.NamedStr(string(action.Variables[0]))
+									var data []byte
+									var go_err error
+									if strings.HasPrefix(str, "hex:") {
+										data, go_err = hex.DecodeString(str[len("hex:"):])
+									} else if strings.HasPrefix(str, "base64:") {
+										data, go_err = base64.StdEncoding.DecodeString(str[len("base64:"):])
+									} else {
+										data = []byte(str)
+									}
+									if go_err != nil {
+										in.Error(action, go_err.Error(), "sys")
+										return true
+									}
+									s := in.NewSpan(len(data), BYTE)
+									for n := 0; n < len(data); n++ {
+										in.V.Bytes[s.Start+uint64(n)] = data[n]
+									}
+									in.Save(action.Target, s)
+								}
+							}
+						}
+					case "value":
+						err := in.CheckArgN(action, 1, 1) && in.CheckDtype(action, 0, ID)
+						if err {
+							in.Error(action, "error retrieving data from provided id", "id")
+							return true
+						}
+						id := in.NamedId(action.First()) //in.GetAny(string(action.Variables[0])).(*bytecode.MinPtr)
+						interp := in
+						for interp.Id != id.Id {
+							interp = interp.Parent
+						}
+						in.Save(action.Target, interp.GetAnyRef(id))
+					case "read":
+						err := in.CheckArgN(action, 1, 1)
+						if err {
+							return true
+						}
+						err = in.CheckDtype(action, 0, STR)
+						if err {
+							return true
+						}
+						b, berr := os.ReadFile(in.NamedStr(action.First()))
+						if berr != nil {
+							in.Error(action, berr.Error(), "file")
+						}
+						sp := bytecode.Span{Start: uint64(len(in.V.Bytes)), Length: uint64(len(b)), Dtype: BYTE}
+						in.V.Bytes = append(in.V.Bytes, b...)
+						in.Save(action.Target, sp)
+						// a := in.NewSpan(len(b), BYTE)
+						// for n, bb := range b {
+						//	 in.SpanSet(&a, n, bb)
+						// }
+						// in.Save(action.Target, a)
+					case "write":
+						if IsSafe {
+							in.Error(action, "cannot write to files when in safe mode!", "permission")
+							return true
+						}
+						err := in.CheckArgN(action, 2, 2)
+						if err {
+							return true
+						}
+						err = in.CheckDtype(action, 0, STR)
+						if err {
+							return true
+						}
+						err = in.CheckDtype(action, 1, SPAN, STR)
+						if err {
+							return true
+						}
+						if in.Type(action.Second()) == SPAN {
+							s := in.NamedSpan(string(action.Variables[1]))
+							if s.Dtype == BYTE {
+								oserr := os.WriteFile(in.NamedStr(string(action.Variables[0])), in.V.Bytes[s.Start:s.Start+s.Length], 0777)
+								if oserr != nil {
+									in.Error(action, oserr.Error(), "sys")
+									return true
+								}
+							}
+						} else {
+							str := in.NamedStr(action.Second())
+							oserr := os.WriteFile(in.NamedStr(action.First()), []byte(str), 0777)
+							if oserr != nil {
+								in.Error(action, oserr.Error(), "sys")
+								return true
+							}
+						}
+					case "mkdir":
+						err := in.CheckArgN(action, 1, 1)
+						if err {
+							return true
+						}
+						err = in.CheckDtype(action, 0, STR)
+						if err {
+							return true
+						}
+						go_err := os.MkdirAll(in.NamedStr(action.First()), 0777)
+						if go_err != nil {
+							in.Error(action, go_err.Error(), "sys")
+							return true
+						}
+					case "remove":
+						err := in.CheckArgN(action, 1, 1)
+						if err {
+							return true
+						}
+						err = in.CheckDtype(action, 0, STR)
+						if err {
+							return true
+						}
+						go_err := os.Remove(in.NamedStr(action.First()))
+						if go_err != nil {
+							in.Error(action, go_err.Error(), "sys")
+							return true
+						}
+					case "len":
+						err := in.CheckArgN(action, 1, 1)
+						if err {
+							return true
+						}
+						err = in.CheckDtype(action, 0, STR, LIST, SPAN)
+						if err {
+							return true
+						}
+						switch in.V.Slots[in.V.Names[string(action.Variables[0])]].Type {
+						case STR:
+							in.Save(action.Target, big.NewInt(int64(len([]rune(in.NamedStr(string(action.Variables[0])))))))
+						case LIST:
+							in.Save(action.Target, big.NewInt(int64(len(in.NamedList(string(action.Variables[0])).Ids))))
+						case SPAN:
+							s := in.NamedSpan(string(action.Variables[0]))
+							in.Save(action.Target, big.NewInt(int64(s.Length)))
+						}
+					case "sleep":
+						err := in.CheckArgN(action, 1, 1)
+						if err {
+							return err
+						}
+						err = in.CheckDtype(action, 0, INT, FLOAT, BYTE)
+						if err {
+							return err
+						}
 						switch in.Type(action.First()) {
 						case INT:
-							in.Save(action.Target, in.NamedInt(string(action.Variables[0])).String())
+							time.Sleep(time.Duration(in.NamedInt(action.First()).Int64()) * 1000 * time.Millisecond)
 						case FLOAT:
-							in.Save(action.Target, in.NamedFloat(string(action.Variables[0])).String())
+							f, _ := in.NamedFloat(action.First()).Float64()
+							time.Sleep(time.Duration(int64(f*1000)) * time.Millisecond)
 						case BYTE:
-							in.Save(action.Target, fmt.Sprintf("b.%d", in.NamedByte(string(action.Variables[0]))))
-						case BOOL:
-							in.Save(action.Target, fmt.Sprintf("%v", in.NamedBool(string(action.Variables[0]))))
+							time.Sleep(time.Duration(int64(in.NamedByte(action.First()))) * 1000 * time.Millisecond)
+						}
+					case "range":
+						err := in.CheckArgN(action, 1, 3)
+						if err {
+							return err
+						}
+						i := in.NamedInt(string(action.Variables[0]))
+						s := bytecode.Span{} //in.NewSpan(int(i.Int64()), INT)
+						iterated := big.NewInt(0)
+						step := big.NewInt(1)
+						if len(action.Variables) > 1 {
+							iterated.Set(in.NamedInt(action.First()))
+							i.Set(in.NamedInt(action.Second()))
+							if len(action.Variables) > 2 {
+								step.Set(in.NamedInt(action.Third()))
+								s = in.NewSpan(int(i.Int64()-iterated.Int64())/int(step.Int64()), INT)
+							} else {
+								s = in.NewSpan(int(i.Int64()-iterated.Int64()), INT)
+							}
+						} else {
+							s = in.NewSpan(int(i.Int64()), INT)
+						}
+						counter := uint64(0)
+						for iterated.Cmp(i) == -1 {
+							in.SpanSet(&s, int(counter), iterated)
+							iterated.Add(iterated, step)
+							i2 := big.NewInt(0)
+							i2.Set(iterated)
+							iterated = i2
+							counter++
+						}
+						in.Save(action.Target, s)
+					case "span":
+						err := in.CheckDtype(action, 0, LIST)
+						if err {
+							return err
+						}
+						l := in.NamedList(action.First())
+						if len(l.Ids) == 0 {
+							in.Error(action, "cannot create a span with length 0", "index")
+							return true
+						}
+						s := in.NewSpan(len(l.Ids), in.TypeRef(l.Ids[0]))
+						for n, item := range l.Ids {
+							go_err := in.SpanSet(&s, n, in.GetAnyRef(item))
+							if go_err != nil {
+								in.Error(action, go_err.Error(), "index")
+								return true
+							}
+						}
+						in.Save(action.Target, s)
+					case "rand":
+						err := in.CheckArgN(action, 2, 2)
+						if err {
+							return err
+						}
+						err = in.CheckDtype(action, 0, FLOAT, INT)
+						if err {
+							return err
+						}
+						err = in.CheckDtype(action, 1, FLOAT, INT)
+						if err {
+							return err
+						}
+						var minimal, maximal float64
+						o, t := in.EqualizeTypes(action.First(), action.Second())
+						switch in.Type(o) {
+						case INT:
+							minimal = float64(in.NamedInt(o).Int64())
+							maximal = float64(in.NamedInt(t).Int64())
+						case FLOAT:
+							minimal, _ = in.NamedFloat(o).Float64()
+							maximal, _ = in.NamedFloat(t).Float64()
+						case BYTE:
+							minimal = float64(in.NamedByte(o))
+							maximal = float64(in.NamedByte(t))
+						}
+						i := rand.Float64()*(maximal-minimal) + minimal
+						in.Save(action.Target, big.NewFloat(i))
+					case "sort":
+						err := in.CheckArgN(action, 1, 2)
+						if err {
+							return err
+						}
+						err = in.CheckDtype(action, 0, LIST)
+						if err {
+							return err
+						}
+						// func start
+						fn := bytecode.Function{}
+						if len(action.Variables) > 1 {
+							err = in.CheckDtype(action, 1, FUNC)
+							if err {
+								return err
+							}
+							fn = *in.NamedFunc(action.Second())
+							if fn.Node != "" && len(fn.Vars) == 1 {
+								mask := bytecode.List{}
+								for ptr := 0; ptr < len(in.NamedList(action.First()).Ids); ptr++ {
+									// user functions start
+									f_in := Interpreter{V: &Vars{
+										Names: make(map[string]int),
+									}}
+									f_in.Id = rand.Uint64()
+									f_in.Copy(in)
+									f_in.Save(string(fn.Vars[0]), in.GetAnyRef(in.NamedList(action.First()).Ids[ptr]))
+									err := f_in.Run(fn.Node)
+									in.ErrSource = f_in.ErrSource
+									if err {
+										return err
+									}
+									_, ok := f_in.V.Names["_return_"]
+									if !ok {
+										f_in.Nothing("_return_")
+									}
+									if f_in.V.Slots[f_in.V.Names["_return_"]].Type == LIST {
+										l := in.CopyList("_return_", &f_in)
+										ListAppend(&mask, in, l)
+									} else if f_in.V.Slots[f_in.V.Names["_return_"]].Type == SPAN {
+										l := in.CopySpan("_return_", &f_in)
+										ListAppend(&mask, in, l)
+									} else if f_in.V.Slots[f_in.V.Names["_return_"]].Type == PAIR {
+										l := in.CopyPair("_return_", &f_in)
+										ListAppend(&mask, in, l)
+									} else {
+										ListAppend(&mask, in, f_in.GetAny("_return_"))
+									}
+									f_in.Destroy()
+									// user functions end
+								}
+								combined := bytecode.List{}
+								for n := range mask.Ids {
+									double := bytecode.List{}
+									ListAppend(&double, in, in.GetAnyRef(mask.Ids[n]))
+									ListAppend(&double, in, in.GetAnyRef(in.NamedList(action.First()).Ids[n]))
+									ListAppend(&combined, in, double)
+								}
+								combined_sorted, go_err := in.SortList(combined)
+								if go_err != nil {
+									in.Error(action, go_err.Error(), "value")
+									return true
+								}
+								combined_second := bytecode.List{}
+								for n := range combined_sorted.Ids {
+									two := in.GetAnyRef(combined_sorted.Ids[n]).(bytecode.List)
+									ListAppend(&combined_second, in, in.GetAnyRef(two.Ids[1]))
+								}
+								in.Save(action.Target, combined_second)
+							} else if fn.Node == "" {
+								mask := bytecode.List{}
+								for ptr := 0; ptr < len(in.NamedList(action.First()).Ids); ptr++ {
+									// user functions start
+									f_in := Interpreter{V: &Vars{
+										Names: make(map[string]int),
+									}}
+									f_in.Id = rand.Uint64()
+									f_in.Copy(in)
+									f_in.Save("_item_", in.GetAnyRef(in.NamedList(action.First()).Ids[ptr]))
+									action2 := bytecode.Action{}
+									action2.Type = action.Second()
+									action2.Variables = []bytecode.Variable{("_item_")}
+									action2.Target = "_return_"
+									action2.Source = action.Source
+									err := f_in.Run(action2.String())
+									in.ErrSource = f_in.ErrSource
+									if err {
+										return err
+									}
+									_, ok := f_in.V.Names["_return_"]
+									if !ok {
+										f_in.Nothing("_return_")
+									}
+									if f_in.V.Slots[f_in.V.Names["_return_"]].Type == LIST {
+										l := in.CopyList("_return_", &f_in)
+										ListAppend(&mask, in, l)
+									} else if f_in.V.Slots[f_in.V.Names["_return_"]].Type == PAIR {
+										l := in.CopyPair("_return_", &f_in)
+										ListAppend(&mask, in, l)
+									} else if f_in.V.Slots[f_in.V.Names["_return_"]].Type == SPAN {
+										l := in.CopySpan("_return_", &f_in)
+										ListAppend(&mask, in, l)
+									} else {
+										ListAppend(&mask, in, f_in.GetAny("_return_"))
+									}
+									f_in.Destroy()
+									// user functions end
+								}
+								combined := bytecode.List{}
+								for n := range mask.Ids {
+									double := bytecode.List{}
+									ListAppend(&double, in, in.GetAnyRef(mask.Ids[n]))
+									ListAppend(&double, in, in.GetAnyRef(in.NamedList(action.First()).Ids[n]))
+									ListAppend(&combined, in, double)
+								}
+								combined_sorted, go_err := in.SortList(combined)
+								if go_err != nil {
+									in.Error(action, go_err.Error(), "value")
+									return true
+								}
+								combined_second := bytecode.List{}
+								for n := range combined_sorted.Ids {
+									two := in.GetAnyRef(combined_sorted.Ids[n]).(bytecode.List)
+									ListAppend(&combined_second, in, in.GetAnyRef(two.Ids[1]))
+								}
+								in.Save(action.Target, combined_second)
+							} else if fn.Node == "" {
+								// this entire block is cope for the fact that built-in functions are not really the same as user ones
+								node_name_sort := fmt.Sprintf("_runner_%x", rand.Int64())
+								target_sort := fmt.Sprintf("_targ_%x", rand.Int64())
+								arguments := []bytecode.Variable{("item")}
+								in.Code[node_name_sort] = []bytecode.Action{{Target: target_sort, Type: fn.Name, Variables: arguments, Source: action.Source},
+									{Type: "return", Variables: []bytecode.Variable{bytecode.Variable(target_sort)}, Source: action.Source}}
+								mask := bytecode.List{}
+								for ptr := 0; ptr < len(in.NamedList(action.First()).Ids); ptr++ {
+									// user functions start
+									f_in := Interpreter{V: &Vars{
+										Names: make(map[string]int),
+									}}
+									f_in.Id = rand.Uint64()
+									f_in.Copy(in)
+									f_in.Save("item", in.GetAnyRef(in.NamedList(action.First()).Ids[ptr]))
+									err := f_in.Run(node_name_sort)
+									in.ErrSource = f_in.ErrSource
+									if err {
+										return err
+									}
+									_, ok := f_in.V.Names["_return_"]
+									if !ok {
+										f_in.Nothing("_return_")
+									}
+									if f_in.V.Slots[f_in.V.Names["_return_"]].Type == LIST {
+										l := in.CopyList("_return_", &f_in)
+										ListAppend(&mask, in, l)
+									} else if f_in.V.Slots[f_in.V.Names["_return_"]].Type == PAIR {
+										l := in.CopyPair("_return_", &f_in)
+										ListAppend(&mask, in, l)
+									} else if f_in.V.Slots[f_in.V.Names["_return_"]].Type == SPAN {
+										l := in.CopySpan("_return_", &f_in)
+										ListAppend(&mask, in, l)
+									} else {
+										ListAppend(&mask, in, f_in.GetAny("_return_"))
+									}
+									f_in.Destroy()
+									// user functions end
+								}
+								delete(in.Code, node_name_sort)
+								combined := bytecode.List{}
+								for n := range mask.Ids {
+									double := bytecode.List{}
+									ListAppend(&double, in, in.GetAnyRef(mask.Ids[n]))
+									ListAppend(&double, in, in.GetAnyRef(in.NamedList(action.First()).Ids[n]))
+									ListAppend(&combined, in, double)
+								}
+								combined_sorted, go_err := in.SortList(combined)
+								if go_err != nil {
+									in.Error(action, go_err.Error(), "value")
+									return true
+								}
+								combined_second := bytecode.List{}
+								for n := range combined_sorted.Ids {
+									two := in.GetAnyRef(combined_sorted.Ids[n]).(bytecode.List)
+									ListAppend(&combined_second, in, in.GetAnyRef(two.Ids[1]))
+								}
+								in.Save(action.Target, combined_second)
+							} else {
+								in.Error(actions[focus], "Undeclared function!", "undeclared")
+								return true
+							}
+						} else {
+							sorted_l, sort_err := in.SortList(in.NamedList(action.First()))
+							if sort_err != nil {
+								in.Error(action, sort_err.Error(), "value")
+								return true
+							}
+							in.Save(action.Target, sorted_l)
+						}
+						//func end
+					case "list":
+						l := bytecode.List{}
+						for _, variable := range action.Variables {
+							ListAppend(&l, in, in.GetAny(string(variable)))
+						}
+						in.Save(actions[focus].Target, l)
+					case "input":
+						err := in.CheckArgN(action, 1, 1)
+						if err {
+							return err
+						}
+						err = in.CheckDtype(action, 0, STR)
+						if err {
+							return err
+						}
+						RL.SetPrompt(in.NamedStr(string(action.Variables[0])))
+						str, err_ := RL.Readline()
+						if err_ != nil {
+							in.Error(action, "keyboard interrupt!", "interrupt")
+							return true
+						}
+						in.Save(action.Target, str)
+					case "exit":
+						err := in.CheckArgN(action, 0, 1)
+						if err {
+							return err
+						}
+						if len(action.Variables) > 0 {
+							err = in.CheckDtype(action, 0, INT)
+							if err {
+								return err
+							}
+							CloseAllRpc()
+							os.Exit(int(in.NamedInt(action.First()).Int64()))
+						}
+						CloseAllRpc()
+						os.Exit(0)
+					case "system":
+						err := in.CheckArgN(actions[focus], 1, 1)
+						if err {
+							return true
+						}
+						err = in.CheckDtype(actions[focus], 0, STR)
+						if err {
+							return true
+						}
+						switch in.NamedStr(string(actions[focus].Variables[0])) {
+						case "os":
+							in.Save(action.Target, runtime.GOOS)
+						case "arch":
+							in.Save(action.Target, runtime.GOARCH)
+						case "exe":
+							exe, _ := os.Executable()
+							in.Save(action.Target, exe)
+						case "version":
+							in.Save(action.Target, "4.3.8")
+						case "args":
+							l := bytecode.List{}
+							for _, arg := range os.Args {
+								ListAppend(&l, in, arg)
+							}
+							in.Save(action.Target, l)
+						case "cwd":
+							wd, err := os.Getwd()
+							if err != nil {
+								in.Error(action, err.Error(), "sys")
+							}
+							in.Save(action.Target, wd)
+						case "file":
+							in.Save(action.Target, ternary(in.File != nil, *in.File, ""))
+						case "funcs":
+							fs := bytecode.List{}
+							interp := in
+							for addr, slot := range interp.V.Slots {
+								if slot.Type == FUNC {
+									fs.Ids = append(fs.Ids, &bytecode.MinPtr{Addr: uint64(addr), Id: interp.Id})
+								}
+							}
+							for interp.Parent != nil {
+								interp = interp.Parent
+								for addr, slot := range interp.V.Slots {
+									if slot.Type == FUNC {
+										fs.Ids = append(fs.Ids, &bytecode.MinPtr{Addr: uint64(addr), Id: interp.Id})
+									}
+								}
+							}
+							in.Save(action.Target, fs)
+						case "vars":
+							vs := bytecode.Pair{make(map[string]*bytecode.MinPtr)}
+							interp := in
+							for interp != nil {
+								for name, i := range interp.V.Names {
+									vs.Ids["str:"+name] = &bytecode.MinPtr{Addr: uint64(i), Id: interp.Id}
+									// PairAppend(&vs, in, in.GetAnyRef(&bytecode.MinPtr{Id: interp.Id, Addr: uint64(i)}), name)
+								}
+								interp = interp.Parent
+							}
+							in.Save(action.Target, vs)
+						}
+					case "keys":
+						err := in.CheckArgN(action, 1, 1)
+						if err {
+							return err
+						}
+						err = in.CheckDtype(action, 0, PAIR)
+						if err {
+							return err
+						}
+						l := bytecode.List{}
+						p := in.NamedPair(action.First())
+						for fkey := range p.Ids {
+							splitted := strings.SplitN(fkey, ":", 2)
+							t, key := splitted[0], splitted[1]
+							switch t {
+							case "str":
+								ListAppend(&l, in, key)
+							case "int":
+								b := big.NewInt(0)
+								b.SetString(key, 10)
+								ListAppend(&l, in, b)
+							case "bool":
+								b := ternary(key == "true", true, false)
+								ListAppend(&l, in, b)
+							}
+						}
+						in.Save(action.Target, l)
+					case "chdir":
+						err := in.CheckArgN(action, 1, 1)
+						if err {
+							return true
+						}
+						err = in.CheckDtype(action, 0, STR)
+						if err {
+							return true
+						}
+						os.Chdir(in.NamedStr(string(action.Variables[0])))
+					case "glob":
+						err := in.CheckArgN(action, 1, 1)
+						if err {
+							return true
+						}
+						err = in.CheckDtype(action, 0, STR)
+						if err {
+							return true
+						}
+						files, go_err := filepath.Glob(in.NamedStr(action.First()))
+						if go_err != nil {
+							in.Error(action, go_err.Error(), "sys")
+							return true
+						}
+						l := bytecode.List{}
+						for _, file := range files {
+							ListAppend(&l, in, file)
+						}
+						in.Save(action.Target, l)
+					case "global":
+						err := in.CheckArgN(action, 2, 2)
+						if err {
+							return true
+						}
+						in.Parent.NamedSave(in.NamedStr(action.First()), in.GetAny(action.Second()), in)
+					case "rget":
+						err := in.CheckArgN(action, 1, 1)
+						if err {
+							return true
+						}
+						if in.CheckDtype(action, 0, STR) {
+							return true
+						}
+						url := in.NamedStr(string(action.Variables[0]))
+						resp, err2 := http.Get(url)
+						if err2 != nil {
+							in.Error(actions[focus], err2.Error(), "sys")
+							return true
+						}
+
+						body, err3 := io.ReadAll(resp.Body)
+						if err3 != nil {
+							in.Error(actions[focus], err3.Error(), "sys")
+							return true
+						}
+						pnew := bytecode.Pair{}
+						pnew.Ids = make(map[string]*bytecode.MinPtr)
+						PairAppend(&pnew, in, big.NewInt(int64(resp.StatusCode)), "code")
+						PairAppend(&pnew, in, string(body), "body")
+						in.Save(actions[focus].Target, pnew)
+						resp.Body.Close()
+					case "jsonp":
+						p := in.JsonPair([]byte(in.NamedStr(action.First())))
+						in.Save(action.Target, p)
+					case "rpost":
+						err := in.CheckArgN(action, 2, 2)
+						if err {
+							return true
+						}
+						if in.CheckDtype(action, 0, STR) && in.CheckDtype(action, 1, PAIR) {
+							return true
+						}
+						url := in.NamedStr(action.First())
+						pair := in.NamedPair(action.Second())
+						// jsonStr := PairString(&pair, in)
+						jsonBytes, go_err := json.Marshal(in.PairToJson(pair))
+						if go_err != nil {
+							in.Error(action, go_err.Error(), "json")
+							return true
+						}
+						resp, err2 := http.Post(url, "application/json", bytes.NewBuffer(jsonBytes))
+						if err2 != nil {
+							in.Error(action, err2.Error(), "sys")
+							return true
+						}
+
+						body, err3 := io.ReadAll(resp.Body)
+						if err3 != nil {
+							in.Error(action, err3.Error(), "sys")
+							return true
+						}
+						pnew := bytecode.Pair{}
+						pnew.Ids = make(map[string]*bytecode.MinPtr)
+						PairAppend(&pnew, in, big.NewInt(int64(resp.StatusCode)), "code")
+						if strings.Contains(resp.Header.Get("Content-Type"), "application/json") {
+							PairAppend(&pnew, in, string(body), "body")
+						} else {
+							PairAppend(&pnew, in, string(body), "body")
+						}
+						in.Save(actions[focus].Target, pnew)
+						resp.Body.Close()
+					case "split":
+						if err := in.CheckArgN(action, 2, 2); err {
+							return err
+						}
+						if err := in.CheckDtype(action, 0, STR); err {
+							return err
+						}
+						if err := in.CheckDtype(action, 1, STR); err {
+							return err
+						}
+						arr := strings.Split(in.NamedStr(string(action.Variables[0])), in.NamedStr(string(action.Variables[1])))
+						l := bytecode.List{}
+						for _, element := range arr {
+							ListAppend(&l, in, element)
+						}
+						in.Save(action.Target, l)
+					case "join":
+						// join list with separator -> !join ["hello", "world"], " "
+						if err := in.CheckArgN(action, 2, 2); err {
+							return err
+						}
+						if err := in.CheckDtype(action, 0, LIST); err {
+							return err
+						}
+						if err := in.CheckDtype(action, 1, STR); err {
+							return err
+						}
+						var to_join []string
+						for _, ref := range in.NamedList(string(action.Variables[0])).Ids {
+							v := in.GetAnyRef(ref)
+							switch vtyped := v.(type) {
+							case string:
+								to_join = append(to_join, vtyped)
+							default:
+								in.Error(action, "cannot join list with non-str items within", "type")
+								return true
+							}
+						}
+						in.Save(action.Target, strings.Join(to_join, in.NamedStr(string(action.Variables[1]))))
+					case "cti":
+						if err := in.CheckArgN(action, 1, 1); err {
+							return err
+						}
+						if err := in.CheckDtype(action, 0, STR); err {
+							return err
+						}
+						str := in.NamedStr(action.First())
+						if len(str) == 0 {
+							in.Error(action, "zero length string in cti", "index")
+							return true
+						}
+						i64 := int64([]rune(str)[0])
+						in.Save(action.Target, big.NewInt(i64))
+					case "itc":
+						if err := in.CheckArgN(action, 1, 1); err {
+							return err
+						}
+						if err := in.CheckDtype(action, 0, INT); err {
+							return err
+						}
+						i64 := in.NamedInt(action.First()).Int64()
+						if i64 < 0 {
+							in.Error(action, "negative integer conversion to str", "index")
+							return true
+						}
+						in.Save(action.Target, string([]rune{rune(i64)}))
+					case "stats":
+						err := in.CheckArgN(action, 1, 1)
+						if err {
+							return err
+						}
+						err = in.CheckDtype(action, 0, STR)
+						if err {
+							return err
+						}
+						info, go_err := os.Stat(in.NamedStr(action.First()))
+						if go_err != nil {
+							in.Error(action, go_err.Error(), "sys")
+							return true
+						}
+						p := bytecode.Pair{Ids: make(map[string]*bytecode.MinPtr)}
+						PairAppend(&p, in, info.Name(), "name")
+						PairAppend(&p, in, info.IsDir(), "is_dir")
+						PairAppend(&p, in, big.NewInt(info.Size()), "size")
+						PairAppend(&p, in, big.NewInt(info.ModTime().Unix()), "mod_time")
+						PairAppend(&p, in, info.ModTime().Format("2006/01/02 15:04:05"), "mod_date")
+						in.Save(action.Target, p)
+					case "id":
+						err := in.CheckArgN(action, 1, 2)
+						if err {
+							return err
+						}
+						if len(action.Variables) == 1 {
+							interp := in
+							_, ok := interp.V.Names[action.First()]
+							for !ok {
+								interp = interp.Parent
+								_, ok = interp.V.Names[action.First()]
+							}
+							// fmt.Println("Pointer:", interp.V.Names[action.First()], interp.Id)
+							in.Save(action.Target, &bytecode.MinPtr{uint64(interp.V.Names[action.First()]), interp.Id})
+						} else {
+							err = in.CheckDtype(action, 1, ID)
+							if err {
+								return err
+							}
+							interp := in
+							ptr := in.NamedId(action.Second())
+							for interp.Id != ptr.Id {
+								interp = interp.Parent
+							}
+							interp.SaveRef(ptr, in.GetAny(action.First()))
+							// newptr := interp.SaveRefNew(in.GetAny(action.First()))
+							// interp.V.Slots[ptr.Addr] = interp.V.Slots[newptr.Addr]
+							// TODO: check if removal of last Slot is needed
+							// interp.SaveRef(ptr, in.GetAny(action.First()))
+						}
+					case "append":
+						err := in.CheckArgN(action, 2, 2)
+						if err {
+							return err
+						}
+						err = in.CheckDtype(action, 0, LIST, SPAN)
+						if err {
+							return err
+						}
+						switch in.V.Slots[in.V.Names[string(action.Variables[0])]].Type {
 						case LIST:
-							l := in.NamedList(action.First())
-							in.Save(action.Target, ListString(&l, in))
+							l := in.NamedList(string(action.Variables[0]))
+							ListAppend(&l, in, in.GetAny(string(action.Variables[1])))
+							in.Save(action.Target, l)
 						case SPAN:
 							s := in.NamedSpan(string(action.Variables[0]))
 							switch s.Dtype {
+							case INT:
+								err := in.CheckDtype(action, 1, INT)
+								if err {
+									return err
+								}
+								new_span := in.NewSpan(int(s.Length)+1, INT) // bytecode.Span{INT, uint64(new_start), new_length}
+								for n := s.Start; n < s.Start+s.Length; n++ {
+									relative_n := n - s.Start
+									in.V.Ints[new_span.Start+relative_n].Set(in.V.Ints[n])
+								}
+								in.V.Ints[new_span.Start+new_span.Length-1].Set(in.NamedInt(string(action.Variables[1])))
+								in.Save(action.Target, new_span)
+								in.V.gcCycle = in.V.gcMax - 1 // make sure the GC actually works
+								// in.GC()                       // this one is here to prevent memory overfill
+							case FLOAT:
+								err := in.CheckDtype(action, 1, FLOAT)
+								if err {
+									return err
+								}
+								new_span := in.NewSpan(int(s.Length)+1, FLOAT) // bytecode.Span{INT, uint64(new_start), new_length}
+								for n := s.Start; n < s.Start+s.Length; n++ {
+									relative_n := n - s.Start
+									in.V.Floats[new_span.Start+relative_n].Set(in.V.Floats[n])
+								}
+								in.V.Floats[new_span.Start+new_span.Length-1].Set(in.NamedFloat(action.Second()))
+								in.Save(action.Target, new_span)
+								in.V.gcCycle = in.V.gcMax - 1
 							case BYTE:
-								if in.NamedStr(action.Second()) == "x" {
-									in.Save(action.Target, fmt.Sprintf("%x", in.V.Bytes[s.Start:s.Start+s.Length]))
-								} else {
-									in.Save(action.Target, string(in.V.Bytes[s.Start:s.Start+s.Length]))
+								err := in.CheckDtype(action, 1, BYTE)
+								if err {
+									return err
 								}
-							default:
-								in.Save(action.Target, in.StringSpan(s))
+								new_span := in.NewSpan(int(s.Length)+1, BYTE)
+								for n := s.Start; n < s.Start+s.Length; n++ {
+									relative_n := n - s.Start
+									in.V.Bytes[new_span.Start+relative_n] = in.V.Bytes[n]
+								}
+								in.V.Bytes[new_span.Start+new_span.Length-1] = in.NamedByte(action.Second())
+								in.Save(action.Target, new_span)
+								in.V.gcCycle = in.V.gcMax - 1
 							}
 						}
-					case INT:
-						switch in.Type(action.First()) {
+					case "has":
+						err := in.CheckArgN(action, 2, 2)
+						if err {
+							return err
+						}
+						err = in.CheckDtype(action, 0, STR, LIST, SPAN)
+						if err {
+							return err
+						}
+						switch in.V.Slots[in.V.Names[string(action.Variables[0])]].Type {
 						case STR:
-							i := big.NewInt(0)
-							i.SetString(in.NamedStr(action.First()), 10)
-							in.Save(action.Target, i)
-						case FLOAT:
-							v, _ := in.NamedFloat(string(action.Variables[0])).Int(big.NewInt(0))
-							in.Save(action.Target, v)
-						case BYTE:
-							v := in.NamedByte(string(action.Variables[0]))
-							in.Save(action.Target, big.NewInt(int64(v)))
-						}
-					case FLOAT:
-						switch in.Type(action.First()) {
-						case INT:
-							v, _ := in.NamedInt(string(action.Variables[0])).Float64()
-							in.Save(action.Target, big.NewFloat(v))
-						case BYTE:
-							in.Save(action.Target, big.NewFloat(float64(in.NamedByte(string(action.Variables[0])))))
-						}
-					case BYTE:
-						switch in.Type(action.First()) {
-						case FLOAT:
-							v, _ := in.NamedFloat(string(action.Variables[0])).Int64()
-							in.Save(action.Target, byte(v))
-						case INT:
-							v := in.NamedInt(string(action.Variables[0])).Int64()
-							in.Save(action.Target, byte(v))
-						}
-					case LIST:
-						switch in.Type(action.First()) {
+							err = in.CheckDtype(action, 1, STR)
+							if err {
+								return err
+							}
+							in.Save(action.Target, strings.Contains(in.NamedStr(string(action.Variables[0])), in.NamedStr(string(action.Variables[1]))))
+						case LIST:
+							in.Save(action.Target, false)
+							l := in.NamedList(string(action.Variables[0]))
+							for n := range len(l.Ids) {
+								in.Save("_cmp_0", in.GetAnyRef(l.Ids[n]))
+								in.Save("_cmp_1", in.GetAny(string(action.Variables[1])))
+								o, t := in.EqualizeTypes("_cmp_0", "_cmp_1")
+								if equals := in.CompareName(o, t); equals {
+									in.Save(action.Target, true)
+									break
+								}
+							}
 						case SPAN:
-							l := bytecode.List{}
+							in.Save(action.Target, false)
 							s := in.NamedSpan(string(action.Variables[0]))
-							for n := s.Start; n < s.Start+s.Length; n++ {
-								var v any = big.NewInt(0)
-								switch s.Dtype { // TODO: add all possible data types
+							for n := range s.Length {
+								switch s.Dtype {
 								case INT:
-									v = in.V.Ints[n]
-								case BYTE:
-									v = in.V.Bytes[n]
+									// TODO: add more types
+									in.Save("_cmp_0", in.V.Ints[s.Start+n])
 								}
-								ListAppend(&l, in, v)
+								in.Save("_cmp_1", in.GetAny(string(action.Variables[1])))
+								o, t := in.EqualizeTypes("_cmp_0", "_cmp_1")
+								if equals := in.CompareName(o, t); equals {
+									in.Save(action.Target, true)
+									break
+								}
 							}
-							in.Save(action.Target, l)
 						}
-					case SPAN:
-						switch in.Type(action.First()) {
+					case "where":
+						err := in.CheckArgN(action, 2, 2)
+						if err {
+							return err
+						}
+						err = in.CheckDtype(action, 0, STR, LIST, SPAN)
+						if err {
+							return err
+						}
+						switch in.V.Slots[in.V.Names[string(action.Variables[0])]].Type {
 						case STR:
-							str := in.NamedStr(string(action.Variables[0]))
-							var data []byte
-							var go_err error
-							if strings.HasPrefix(str, "hex:") {
-								data, go_err = hex.DecodeString(str[len("hex:"):])
-							} else if strings.HasPrefix(str, "base64:") {
-								data, go_err = base64.StdEncoding.DecodeString(str[len("base64:"):])
-							} else {
-								data = []byte(str)
-							}
-							if go_err != nil {
-								in.Error(action, go_err.Error(), "sys")
-								return true
-							}
-							s := in.NewSpan(len(data), BYTE)
-							for n := 0; n < len(data); n++ {
-								in.V.Bytes[s.Start+uint64(n)] = data[n]
-							}
-							in.Save(action.Target, s)
-						}
-					}
-				}
-			case "value":
-				err := in.CheckArgN(action, 1, 1) && in.CheckDtype(action, 0, ID)
-				if err {
-					in.Error(action, "error retrieving data from provided id", "id")
-					return true
-				}
-				id := in.NamedId(action.First()) //in.GetAny(string(action.Variables[0])).(*bytecode.MinPtr)
-				interp := in
-				for interp.Id != id.Id {
-					interp = interp.Parent
-				}
-				in.Save(action.Target, interp.GetAnyRef(id))
-			case "read":
-				err := in.CheckArgN(action, 1, 1)
-				if err {
-					return true
-				}
-				err = in.CheckDtype(action, 0, STR)
-				if err {
-					return true
-				}
-				b, berr := os.ReadFile(in.NamedStr(action.First()))
-				if berr != nil {
-					in.Error(action, berr.Error(), "file")
-				}
-				sp := bytecode.Span{Start: uint64(len(in.V.Bytes)), Length: uint64(len(b)), Dtype: BYTE}
-				in.V.Bytes = append(in.V.Bytes, b...)
-				in.Save(action.Target, sp)
-				// a := in.NewSpan(len(b), BYTE)
-				// for n, bb := range b {
-				//	 in.SpanSet(&a, n, bb)
-				// }
-				// in.Save(action.Target, a)
-			case "write":
-				if IsSafe {
-					in.Error(action, "cannot write to files when in safe mode!", "permission")
-					return true
-				}
-				err := in.CheckArgN(action, 2, 2)
-				if err {
-					return true
-				}
-				err = in.CheckDtype(action, 0, STR)
-				if err {
-					return true
-				}
-				err = in.CheckDtype(action, 1, SPAN, STR)
-				if err {
-					return true
-				}
-				if in.Type(action.Second()) == SPAN {
-					s := in.NamedSpan(string(action.Variables[1]))
-					if s.Dtype == BYTE {
-						oserr := os.WriteFile(in.NamedStr(string(action.Variables[0])), in.V.Bytes[s.Start:s.Start+s.Length], 0777)
-						if oserr != nil {
-							in.Error(action, oserr.Error(), "sys")
-							return true
-						}
-					}
-				} else {
-					str := in.NamedStr(action.Second())
-					oserr := os.WriteFile(in.NamedStr(action.First()), []byte(str), 0777)
-					if oserr != nil {
-						in.Error(action, oserr.Error(), "sys")
-						return true
-					}
-				}
-			case "mkdir":
-				err := in.CheckArgN(action, 1, 1)
-				if err {
-					return true
-				}
-				err = in.CheckDtype(action, 0, STR)
-				if err {
-					return true
-				}
-				go_err := os.MkdirAll(in.NamedStr(action.First()), 0777)
-				if go_err != nil {
-					in.Error(action, go_err.Error(), "sys")
-					return true
-				}
-			case "remove":
-				err := in.CheckArgN(action, 1, 1)
-				if err {
-					return true
-				}
-				err = in.CheckDtype(action, 0, STR)
-				if err {
-					return true
-				}
-				go_err := os.Remove(in.NamedStr(action.First()))
-				if go_err != nil {
-					in.Error(action, go_err.Error(), "sys")
-					return true
-				}
-			case "len":
-				err := in.CheckArgN(action, 1, 1)
-				if err {
-					return true
-				}
-				err = in.CheckDtype(action, 0, STR, LIST, SPAN)
-				if err {
-					return true
-				}
-				switch in.V.Slots[in.V.Names[string(action.Variables[0])]].Type {
-				case STR:
-					in.Save(action.Target, big.NewInt(int64(len([]rune(in.NamedStr(string(action.Variables[0])))))))
-				case LIST:
-					in.Save(action.Target, big.NewInt(int64(len(in.NamedList(string(action.Variables[0])).Ids))))
-				case SPAN:
-					s := in.NamedSpan(string(action.Variables[0]))
-					in.Save(action.Target, big.NewInt(int64(s.Length)))
-				}
-			case "sleep":
-				err := in.CheckArgN(action, 1, 1)
-				if err {
-					return err
-				}
-				err = in.CheckDtype(action, 0, INT, FLOAT, BYTE)
-				if err {
-					return err
-				}
-				switch in.Type(action.First()) {
-				case INT:
-					time.Sleep(time.Duration(in.NamedInt(action.First()).Int64()) * 1000 * time.Millisecond)
-				case FLOAT:
-					f, _ := in.NamedFloat(action.First()).Float64()
-					time.Sleep(time.Duration(int64(f*1000)) * time.Millisecond)
-				case BYTE:
-					time.Sleep(time.Duration(int64(in.NamedByte(action.First()))) * 1000 * time.Millisecond)
-				}
-			case "range":
-				err := in.CheckArgN(action, 1, 3)
-				if err {
-					return err
-				}
-				i := in.NamedInt(string(action.Variables[0]))
-				s := bytecode.Span{} //in.NewSpan(int(i.Int64()), INT)
-				iterated := big.NewInt(0)
-				step := big.NewInt(1)
-				if len(action.Variables) > 1 {
-					iterated.Set(in.NamedInt(action.First()))
-					i.Set(in.NamedInt(action.Second()))
-					if len(action.Variables) > 2 {
-						step.Set(in.NamedInt(action.Third()))
-						s = in.NewSpan(int(i.Int64()-iterated.Int64())/int(step.Int64()), INT)
-					} else {
-						s = in.NewSpan(int(i.Int64()-iterated.Int64()), INT)
-					}
-				} else {
-					s = in.NewSpan(int(i.Int64()), INT)
-				}
-				counter := uint64(0)
-				for iterated.Cmp(i) == -1 {
-					in.SpanSet(&s, int(counter), iterated)
-					iterated.Add(iterated, step)
-					i2 := big.NewInt(0)
-					i2.Set(iterated)
-					iterated = i2
-					counter++
-				}
-				in.Save(action.Target, s)
-			case "span":
-				err := in.CheckDtype(action, 0, LIST)
-				if err {
-					return err
-				}
-				l := in.NamedList(action.First())
-				if len(l.Ids) == 0 {
-					in.Error(action, "cannot create a span with length 0", "index")
-					return true
-				}
-				s := in.NewSpan(len(l.Ids), in.TypeRef(l.Ids[0]))
-				for n, item := range l.Ids {
-					go_err := in.SpanSet(&s, n, in.GetAnyRef(item))
-					if go_err != nil {
-						in.Error(action, go_err.Error(), "index")
-						return true
-					}
-				}
-				in.Save(action.Target, s)
-			case "rand":
-				err := in.CheckArgN(action, 2, 2)
-				if err {
-					return err
-				}
-				err = in.CheckDtype(action, 0, FLOAT, INT)
-				if err {
-					return err
-				}
-				err = in.CheckDtype(action, 1, FLOAT, INT)
-				if err {
-					return err
-				}
-				var minimal, maximal float64
-				o, t := in.EqualizeTypes(action.First(), action.Second())
-				switch in.Type(o) {
-				case INT:
-					minimal = float64(in.NamedInt(o).Int64())
-					maximal = float64(in.NamedInt(t).Int64())
-				case FLOAT:
-					minimal, _ = in.NamedFloat(o).Float64()
-					maximal, _ = in.NamedFloat(t).Float64()
-				case BYTE:
-					minimal = float64(in.NamedByte(o))
-					maximal = float64(in.NamedByte(t))
-				}
-				i := rand.Float64()*(maximal-minimal) + minimal
-				in.Save(action.Target, big.NewFloat(i))
-			case "sort":
-				err := in.CheckArgN(action, 1, 2)
-				if err {
-					return err
-				}
-				err = in.CheckDtype(action, 0, LIST)
-				if err {
-					return err
-				}
-				// func start
-				fn := bytecode.Function{}
-				if len(action.Variables) > 1 {
-					err = in.CheckDtype(action, 1, FUNC)
-					if err {
-						return err
-					}
-					fn = *in.NamedFunc(action.Second())
-					if fn.Node != "" && len(fn.Vars) == 1 {
-						mask := bytecode.List{}
-						for ptr := 0; ptr < len(in.NamedList(action.First()).Ids); ptr++ {
-							// user functions start
-							f_in := Interpreter{V: &Vars{
-								Names: make(map[string]int),
-							}}
-							f_in.Id = rand.Uint64()
-							f_in.Copy(in)
-							f_in.Save(string(fn.Vars[0]), in.GetAnyRef(in.NamedList(action.First()).Ids[ptr]))
-							err := f_in.Run(fn.Node)
-							in.ErrSource = f_in.ErrSource
+							err = in.CheckDtype(action, 1, STR)
 							if err {
 								return err
 							}
-							_, ok := f_in.V.Names["_return_"]
-							if !ok {
-								f_in.Nothing("_return_")
+							in.Save(action.Target, big.NewInt(int64(strings.Index(in.NamedStr(string(action.Variables[0])), in.NamedStr(string(action.Variables[1]))))))
+						case LIST:
+							in.Save(action.Target, big.NewInt(-1))
+							l := in.NamedList(string(action.Variables[0]))
+							for n := range len(l.Ids) {
+								in.Save("_cmp_0", in.GetAnyRef(l.Ids[n]))
+								in.Save("_cmp_1", in.GetAny(string(action.Variables[1])))
+								o, t := in.EqualizeTypes("_cmp_0", "_cmp_1")
+								if equals := in.CompareName(o, t); equals {
+									in.Save(action.Target, big.NewInt(int64(n)))
+									break
+								}
 							}
-							if f_in.V.Slots[f_in.V.Names["_return_"]].Type == LIST {
-								l := in.CopyList("_return_", &f_in)
-								ListAppend(&mask, in, l)
-							} else if f_in.V.Slots[f_in.V.Names["_return_"]].Type == SPAN {
-								l := in.CopySpan("_return_", &f_in)
-								ListAppend(&mask, in, l)
-							} else if f_in.V.Slots[f_in.V.Names["_return_"]].Type == PAIR {
-								l := in.CopyPair("_return_", &f_in)
-								ListAppend(&mask, in, l)
-							} else {
-								ListAppend(&mask, in, f_in.GetAny("_return_"))
+						case SPAN:
+							in.Save(action.Target, false)
+							s := in.NamedSpan(string(action.Variables[0]))
+							for n := range s.Length {
+								switch s.Dtype {
+								case INT:
+									// TODO: add more types
+									in.Save("_cmp_0", in.V.Ints[s.Start+n])
+								}
+								in.Save("_cmp_1", in.GetAny(string(action.Variables[1])))
+								o, t := in.EqualizeTypes("_cmp_0", "_cmp_1")
+								if equals := in.CompareName(o, t); equals {
+									in.Save(action.Target, big.NewInt(int64(n)))
+									break
+								}
 							}
-							f_in.Destroy()
-							// user functions end
 						}
-						combined := bytecode.List{}
-						for n := range mask.Ids {
-							double := bytecode.List{}
-							ListAppend(&double, in, in.GetAnyRef(mask.Ids[n]))
-							ListAppend(&double, in, in.GetAnyRef(in.NamedList(action.First()).Ids[n]))
-							ListAppend(&combined, in, double)
-						}
-						combined_sorted, go_err := in.SortList(combined)
-						if go_err != nil {
-							in.Error(action, go_err.Error(), "value")
+					case "check_type":
+						dtypes_map := map[byte]string{NOTH: "noth", INT: "int", FLOAT: "float", BYTE: "byte", STR: "str", FUNC: "func", SPAN: "span", ID: "id", LIST: "list", BOOL: "bool", PAIR: "pair", ARR: "arr"}
+						type_byte := in.Type(action.First())
+						type_string := in.NamedStr(action.Second()) // TODO TYPECHECK
+						if dtypes_map[type_byte] != type_string {
+							in.Error(action, fmt.Sprintf("type mismatch: %s instead of %s", type_string, dtypes_map[type_byte]), "type")
 							return true
 						}
-						combined_second := bytecode.List{}
-						for n := range combined_sorted.Ids {
-							two := in.GetAnyRef(combined_sorted.Ids[n]).(bytecode.List)
-							ListAppend(&combined_second, in, in.GetAnyRef(two.Ids[1]))
+					case "type":
+						err := in.CheckArgN(action, 1, 1)
+						if err {
+							return err
 						}
-						in.Save(action.Target, combined_second)
-					} else if fn.Node == "" {
-						mask := bytecode.List{}
-						for ptr := 0; ptr < len(in.NamedList(action.First()).Ids); ptr++ {
-							// user functions start
-							f_in := Interpreter{V: &Vars{
-								Names: make(map[string]int),
-							}}
-							f_in.Id = rand.Uint64()
-							f_in.Copy(in)
-							f_in.Save("_item_", in.GetAnyRef(in.NamedList(action.First()).Ids[ptr]))
-							action2 := bytecode.Action{}
-							action2.Type = action.Second()
-							action2.Variables = []bytecode.Variable{("_item_")}
-							action2.Target = "_return_"
-							action2.Source = action.Source
-							err := f_in.Run(action2.String())
-							in.ErrSource = f_in.ErrSource
-							if err {
-								return err
-							}
-							_, ok := f_in.V.Names["_return_"]
-							if !ok {
-								f_in.Nothing("_return_")
-							}
-							if f_in.V.Slots[f_in.V.Names["_return_"]].Type == LIST {
-								l := in.CopyList("_return_", &f_in)
-								ListAppend(&mask, in, l)
-							} else if f_in.V.Slots[f_in.V.Names["_return_"]].Type == PAIR {
-								l := in.CopyPair("_return_", &f_in)
-								ListAppend(&mask, in, l)
-							} else if f_in.V.Slots[f_in.V.Names["_return_"]].Type == SPAN {
-								l := in.CopySpan("_return_", &f_in)
-								ListAppend(&mask, in, l)
-							} else {
-								ListAppend(&mask, in, f_in.GetAny("_return_"))
-							}
-							f_in.Destroy()
-							// user functions end
-						}
-						combined := bytecode.List{}
-						for n := range mask.Ids {
-							double := bytecode.List{}
-							ListAppend(&double, in, in.GetAnyRef(mask.Ids[n]))
-							ListAppend(&double, in, in.GetAnyRef(in.NamedList(action.First()).Ids[n]))
-							ListAppend(&combined, in, double)
-						}
-						combined_sorted, go_err := in.SortList(combined)
-						if go_err != nil {
-							in.Error(action, go_err.Error(), "value")
-							return true
-						}
-						combined_second := bytecode.List{}
-						for n := range combined_sorted.Ids {
-							two := in.GetAnyRef(combined_sorted.Ids[n]).(bytecode.List)
-							ListAppend(&combined_second, in, in.GetAnyRef(two.Ids[1]))
-						}
-						in.Save(action.Target, combined_second)
-					} else if fn.Node == "" {
-						// this entire block is cope for the fact that built-in functions are not really the same as user ones
-						node_name_sort := fmt.Sprintf("_runner_%x", rand.Int64())
-						target_sort := fmt.Sprintf("_targ_%x", rand.Int64())
-						arguments := []bytecode.Variable{("item")}
-						in.Code[node_name_sort] = []bytecode.Action{{Target: target_sort, Type: fn.Name, Variables: arguments, Source: action.Source},
-							{Type: "return", Variables: []bytecode.Variable{bytecode.Variable(target_sort)}, Source: action.Source}}
-						mask := bytecode.List{}
-						for ptr := 0; ptr < len(in.NamedList(action.First()).Ids); ptr++ {
-							// user functions start
-							f_in := Interpreter{V: &Vars{
-								Names: make(map[string]int),
-							}}
-							f_in.Id = rand.Uint64()
-							f_in.Copy(in)
-							f_in.Save("item", in.GetAnyRef(in.NamedList(action.First()).Ids[ptr]))
-							err := f_in.Run(node_name_sort)
-							in.ErrSource = f_in.ErrSource
-							if err {
-								return err
-							}
-							_, ok := f_in.V.Names["_return_"]
-							if !ok {
-								f_in.Nothing("_return_")
-							}
-							if f_in.V.Slots[f_in.V.Names["_return_"]].Type == LIST {
-								l := in.CopyList("_return_", &f_in)
-								ListAppend(&mask, in, l)
-							} else if f_in.V.Slots[f_in.V.Names["_return_"]].Type == PAIR {
-								l := in.CopyPair("_return_", &f_in)
-								ListAppend(&mask, in, l)
-							} else if f_in.V.Slots[f_in.V.Names["_return_"]].Type == SPAN {
-								l := in.CopySpan("_return_", &f_in)
-								ListAppend(&mask, in, l)
-							} else {
-								ListAppend(&mask, in, f_in.GetAny("_return_"))
-							}
-							f_in.Destroy()
-							// user functions end
-						}
-						delete(in.Code, node_name_sort)
-						combined := bytecode.List{}
-						for n := range mask.Ids {
-							double := bytecode.List{}
-							ListAppend(&double, in, in.GetAnyRef(mask.Ids[n]))
-							ListAppend(&double, in, in.GetAnyRef(in.NamedList(action.First()).Ids[n]))
-							ListAppend(&combined, in, double)
-						}
-						combined_sorted, go_err := in.SortList(combined)
-						if go_err != nil {
-							in.Error(action, go_err.Error(), "value")
-							return true
-						}
-						combined_second := bytecode.List{}
-						for n := range combined_sorted.Ids {
-							two := in.GetAnyRef(combined_sorted.Ids[n]).(bytecode.List)
-							ListAppend(&combined_second, in, in.GetAnyRef(two.Ids[1]))
-						}
-						in.Save(action.Target, combined_second)
-					} else {
-						in.Error(actions[focus], "Undeclared function!", "undeclared")
-						return true
-					}
-				} else {
-					sorted_l, sort_err := in.SortList(in.NamedList(action.First()))
-					if sort_err != nil {
-						in.Error(action, sort_err.Error(), "value")
-						return true
-					}
-					in.Save(action.Target, sorted_l)
-				}
-				//func end
-			case "list":
-				l := bytecode.List{}
-				for _, variable := range action.Variables {
-					ListAppend(&l, in, in.GetAny(string(variable)))
-				}
-				in.Save(actions[focus].Target, l)
-			case "input":
-				err := in.CheckArgN(action, 1, 1)
-				if err {
-					return err
-				}
-				err = in.CheckDtype(action, 0, STR)
-				if err {
-					return err
-				}
-				RL.SetPrompt(in.NamedStr(string(action.Variables[0])))
-				str, err_ := RL.Readline()
-				if err_ != nil {
-					in.Error(action, "keyboard interrupt!", "interrupt")
-					return true
-				}
-				in.Save(action.Target, str)
-			case "exit":
-				err := in.CheckArgN(action, 0, 1)
-				if err {
-					return err
-				}
-				if len(action.Variables) > 0 {
-					err = in.CheckDtype(action, 0, INT)
-					if err {
-						return err
-					}
-					CloseAllRpc()
-					os.Exit(int(in.NamedInt(action.First()).Int64()))
-				}
-				CloseAllRpc()
-				os.Exit(0)
-			case "system":
-				err := in.CheckArgN(actions[focus], 1, 1)
-				if err {
-					return true
-				}
-				err = in.CheckDtype(actions[focus], 0, STR)
-				if err {
-					return true
-				}
-				switch in.NamedStr(string(actions[focus].Variables[0])) {
-				case "os":
-					in.Save(action.Target, runtime.GOOS)
-				case "arch":
-					in.Save(action.Target, runtime.GOARCH)
-				case "exe":
-					exe, _ := os.Executable()
-					in.Save(action.Target, exe)
-				case "version":
-					in.Save(action.Target, "4.3.7")
-				case "args":
-					l := bytecode.List{}
-					for _, arg := range os.Args {
-						ListAppend(&l, in, arg)
-					}
-					in.Save(action.Target, l)
-				case "cwd":
-					wd, err := os.Getwd()
-					if err != nil {
-						in.Error(action, err.Error(), "sys")
-					}
-					in.Save(action.Target, wd)
-				case "file":
-					in.Save(action.Target, ternary(in.File != nil, *in.File, ""))
-				case "funcs":
-					fs := bytecode.List{}
-					interp := in
-					for addr, slot := range interp.V.Slots {
-						if slot.Type == FUNC {
-							fs.Ids = append(fs.Ids, &bytecode.MinPtr{Addr: uint64(addr), Id: interp.Id})
-						}
-					}
-					for interp.Parent != nil {
-						interp = interp.Parent
-						for addr, slot := range interp.V.Slots {
-							if slot.Type == FUNC {
-								fs.Ids = append(fs.Ids, &bytecode.MinPtr{Addr: uint64(addr), Id: interp.Id})
-							}
-						}
-					}
-					in.Save(action.Target, fs)
-				case "vars":
-					vs := bytecode.Pair{make(map[string]*bytecode.MinPtr)}
-					interp := in
-					for interp != nil {
-						for name, i := range interp.V.Names {
-							vs.Ids["str:"+name] = &bytecode.MinPtr{Addr: uint64(i), Id: interp.Id}
-							// PairAppend(&vs, in, in.GetAnyRef(&bytecode.MinPtr{Id: interp.Id, Addr: uint64(i)}), name)
-						}
-						interp = interp.Parent
-					}
-					in.Save(action.Target, vs)
-				}
-			case "keys":
-				err := in.CheckArgN(action, 1, 1)
-				if err {
-					return err
-				}
-				err = in.CheckDtype(action, 0, PAIR)
-				if err {
-					return err
-				}
-				l := bytecode.List{}
-				p := in.NamedPair(action.First())
-				for fkey := range p.Ids {
-					splitted := strings.SplitN(fkey, ":", 2)
-					t, key := splitted[0], splitted[1]
-					switch t {
-					case "str":
-						ListAppend(&l, in, key)
-					case "int":
-						b := big.NewInt(0)
-						b.SetString(key, 10)
-						ListAppend(&l, in, b)
-					case "bool":
-						b := ternary(key == "true", true, false)
-						ListAppend(&l, in, b)
-					}
-				}
-				in.Save(action.Target, l)
-			case "chdir":
-				err := in.CheckArgN(action, 1, 1)
-				if err {
-					return true
-				}
-				err = in.CheckDtype(action, 0, STR)
-				if err {
-					return true
-				}
-				os.Chdir(in.NamedStr(string(action.Variables[0])))
-			case "glob":
-				err := in.CheckArgN(action, 1, 1)
-				if err {
-					return true
-				}
-				err = in.CheckDtype(action, 0, STR)
-				if err {
-					return true
-				}
-				files, go_err := filepath.Glob(in.NamedStr(action.First()))
-				if go_err != nil {
-					in.Error(action, go_err.Error(), "sys")
-					return true
-				}
-				l := bytecode.List{}
-				for _, file := range files {
-					ListAppend(&l, in, file)
-				}
-				in.Save(action.Target, l)
-			case "rget":
-				err := in.CheckArgN(action, 1, 1)
-				if err {
-					return true
-				}
-				if in.CheckDtype(action, 0, STR) {
-					return true
-				}
-				url := in.NamedStr(string(action.Variables[0]))
-				resp, err2 := http.Get(url)
-				if err2 != nil {
-					in.Error(actions[focus], err2.Error(), "sys")
-					return true
-				}
-
-				body, err3 := io.ReadAll(resp.Body)
-				if err3 != nil {
-					in.Error(actions[focus], err3.Error(), "sys")
-					return true
-				}
-				pnew := bytecode.Pair{}
-				pnew.Ids = make(map[string]*bytecode.MinPtr)
-				PairAppend(&pnew, in, big.NewInt(int64(resp.StatusCode)), "code")
-				PairAppend(&pnew, in, string(body), "body")
-				in.Save(actions[focus].Target, pnew)
-				resp.Body.Close()
-			case "jsonp":
-				p := in.JsonPair([]byte(in.NamedStr(action.First())))
-				in.Save(action.Target, p)
-			case "rpost":
-				err := in.CheckArgN(action, 2, 2)
-				if err {
-					return true
-				}
-				if in.CheckDtype(action, 0, STR) && in.CheckDtype(action, 1, PAIR) {
-					return true
-				}
-				url := in.NamedStr(action.First())
-				pair := in.NamedPair(action.Second())
-				// jsonStr := PairString(&pair, in)
-				jsonBytes, go_err := json.Marshal(in.PairToJson(pair))
-				if go_err != nil {
-					in.Error(action, go_err.Error(), "json")
-					return true
-				}
-				resp, err2 := http.Post(url, "application/json", bytes.NewBuffer(jsonBytes))
-				if err2 != nil {
-					in.Error(action, err2.Error(), "sys")
-					return true
-				}
-
-				body, err3 := io.ReadAll(resp.Body)
-				if err3 != nil {
-					in.Error(action, err3.Error(), "sys")
-					return true
-				}
-				pnew := bytecode.Pair{}
-				pnew.Ids = make(map[string]*bytecode.MinPtr)
-				PairAppend(&pnew, in, big.NewInt(int64(resp.StatusCode)), "code")
-				if strings.Contains(resp.Header.Get("Content-Type"), "application/json") {
-					PairAppend(&pnew, in, string(body), "body")
-				} else {
-					PairAppend(&pnew, in, string(body), "body")
-				}
-				in.Save(actions[focus].Target, pnew)
-				resp.Body.Close()
-			case "split":
-				if err := in.CheckArgN(action, 2, 2); err {
-					return err
-				}
-				if err := in.CheckDtype(action, 0, STR); err {
-					return err
-				}
-				if err := in.CheckDtype(action, 1, STR); err {
-					return err
-				}
-				arr := strings.Split(in.NamedStr(string(action.Variables[0])), in.NamedStr(string(action.Variables[1])))
-				l := bytecode.List{}
-				for _, element := range arr {
-					ListAppend(&l, in, element)
-				}
-				in.Save(action.Target, l)
-			case "join":
-				// join list with separator -> !join ["hello", "world"], " "
-				if err := in.CheckArgN(action, 2, 2); err {
-					return err
-				}
-				if err := in.CheckDtype(action, 0, LIST); err {
-					return err
-				}
-				if err := in.CheckDtype(action, 1, STR); err {
-					return err
-				}
-				var to_join []string
-				for _, ref := range in.NamedList(string(action.Variables[0])).Ids {
-					v := in.GetAnyRef(ref)
-					switch vtyped := v.(type) {
-					case string:
-						to_join = append(to_join, vtyped)
+						in.Save(action.Target, bytecode.TypeStr(in.Type(action.First())))
 					default:
-						in.Error(action, "cannot join list with non-str items within", "type")
-						return true
-					}
-				}
-				in.Save(action.Target, strings.Join(to_join, in.NamedStr(string(action.Variables[1]))))
-			case "cti":
-				if err := in.CheckArgN(action, 1, 1); err {
-					return err
-				}
-				if err := in.CheckDtype(action, 0, STR); err {
-					return err
-				}
-				str := in.NamedStr(action.First())
-				if len(str) == 0 {
-					in.Error(action, "zero length string in cti", "index")
-					return true
-				}
-				i64 := int64([]rune(str)[0])
-				in.Save(action.Target, big.NewInt(i64))
-			case "itc":
-				if err := in.CheckArgN(action, 1, 1); err {
-					return err
-				}
-				if err := in.CheckDtype(action, 0, INT); err {
-					return err
-				}
-				i64 := in.NamedInt(action.First()).Int64()
-				if i64 < 0 {
-					in.Error(action, "negative integer conversion to str", "index")
-					return true
-				}
-				in.Save(action.Target, string([]rune{rune(i64)}))
-			case "stats":
-				err := in.CheckArgN(action, 1, 1)
-				if err {
-					return err
-				}
-				err = in.CheckDtype(action, 0, STR)
-				if err {
-					return err
-				}
-				info, go_err := os.Stat(in.NamedStr(action.First()))
-				if go_err != nil {
-					in.Error(action, go_err.Error(), "sys")
-					return true
-				}
-				p := bytecode.Pair{Ids: make(map[string]*bytecode.MinPtr)}
-				PairAppend(&p, in, info.Name(), "name")
-				PairAppend(&p, in, info.IsDir(), "is_dir")
-				PairAppend(&p, in, big.NewInt(info.Size()), "size")
-				PairAppend(&p, in, big.NewInt(info.ModTime().Unix()), "mod_time")
-				PairAppend(&p, in, info.ModTime().Format("2006/01/02 15:04:05"), "mod_date")
-				in.Save(action.Target, p)
-			case "id":
-				err := in.CheckArgN(action, 1, 2)
-				if err {
-					return err
-				}
-				if len(action.Variables) == 1 {
-					interp := in
-					_, ok := interp.V.Names[action.First()]
-					for !ok {
-						interp = interp.Parent
-						_, ok = interp.V.Names[action.First()]
-					}
-					// fmt.Println("Pointer:", interp.V.Names[action.First()], interp.Id)
-					in.Save(action.Target, &bytecode.MinPtr{uint64(interp.V.Names[action.First()]), interp.Id})
-				} else {
-					err = in.CheckDtype(action, 1, ID)
-					if err {
-						return err
-					}
-					interp := in
-					ptr := in.NamedId(action.Second())
-					for interp.Id != ptr.Id {
-						interp = interp.Parent
-					}
-					interp.SaveRef(ptr, in.GetAny(action.First()))
-					// newptr := interp.SaveRefNew(in.GetAny(action.First()))
-					// interp.V.Slots[ptr.Addr] = interp.V.Slots[newptr.Addr]
-					// TODO: check if removal of last Slot is needed
-					// interp.SaveRef(ptr, in.GetAny(action.First()))
-				}
-			case "append":
-				err := in.CheckArgN(action, 2, 2)
-				if err {
-					return err
-				}
-				err = in.CheckDtype(action, 0, LIST, SPAN)
-				if err {
-					return err
-				}
-				switch in.V.Slots[in.V.Names[string(action.Variables[0])]].Type {
-				case LIST:
-					l := in.NamedList(string(action.Variables[0]))
-					ListAppend(&l, in, in.GetAny(string(action.Variables[1])))
-					in.Save(action.Target, l)
-				case SPAN:
-					s := in.NamedSpan(string(action.Variables[0]))
-					switch s.Dtype {
-					case INT:
-						err := in.CheckDtype(action, 1, INT)
-						if err {
-							return err
-						}
-						new_span := in.NewSpan(int(s.Length)+1, INT) // bytecode.Span{INT, uint64(new_start), new_length}
-						for n := s.Start; n < s.Start+s.Length; n++ {
-							relative_n := n - s.Start
-							in.V.Ints[new_span.Start+relative_n].Set(in.V.Ints[n])
-						}
-						in.V.Ints[new_span.Start+new_span.Length-1].Set(in.NamedInt(string(action.Variables[1])))
-						in.Save(action.Target, new_span)
-						in.V.gcCycle = in.V.gcMax - 1 // make sure the GC actually works
-						// in.GC()                       // this one is here to prevent memory overfill
-					case FLOAT:
-						err := in.CheckDtype(action, 1, FLOAT)
-						if err {
-							return err
-						}
-						new_span := in.NewSpan(int(s.Length)+1, FLOAT) // bytecode.Span{INT, uint64(new_start), new_length}
-						for n := s.Start; n < s.Start+s.Length; n++ {
-							relative_n := n - s.Start
-							in.V.Floats[new_span.Start+relative_n].Set(in.V.Floats[n])
-						}
-						in.V.Floats[new_span.Start+new_span.Length-1].Set(in.NamedFloat(action.Second()))
-						in.Save(action.Target, new_span)
-						in.V.gcCycle = in.V.gcMax - 1
-					case BYTE:
-						err := in.CheckDtype(action, 1, BYTE)
-						if err {
-							return err
-						}
-						new_span := in.NewSpan(int(s.Length)+1, BYTE)
-						for n := s.Start; n < s.Start+s.Length; n++ {
-							relative_n := n - s.Start
-							in.V.Bytes[new_span.Start+relative_n] = in.V.Bytes[n]
-						}
-						in.V.Bytes[new_span.Start+new_span.Length-1] = in.NamedByte(action.Second())
-						in.Save(action.Target, new_span)
-						in.V.gcCycle = in.V.gcMax - 1
-					}
-				}
-			case "has":
-				err := in.CheckArgN(action, 2, 2)
-				if err {
-					return err
-				}
-				err = in.CheckDtype(action, 0, STR, LIST, SPAN)
-				if err {
-					return err
-				}
-				switch in.V.Slots[in.V.Names[string(action.Variables[0])]].Type {
-				case STR:
-					err = in.CheckDtype(action, 1, STR)
-					if err {
-						return err
-					}
-					in.Save(action.Target, strings.Contains(in.NamedStr(string(action.Variables[0])), in.NamedStr(string(action.Variables[1]))))
-				case LIST:
-					in.Save(action.Target, false)
-					l := in.NamedList(string(action.Variables[0]))
-					for n := range len(l.Ids) {
-						in.Save("_cmp_0", in.GetAnyRef(l.Ids[n]))
-						in.Save("_cmp_1", in.GetAny(string(action.Variables[1])))
-						o, t := in.EqualizeTypes("_cmp_0", "_cmp_1")
-						if equals := in.CompareName(o, t); equals {
-							in.Save(action.Target, true)
-							break
-						}
-					}
-				case SPAN:
-					in.Save(action.Target, false)
-					s := in.NamedSpan(string(action.Variables[0]))
-					for n := range s.Length {
-						switch s.Dtype {
-						case INT:
-							// TODO: add more types
-							in.Save("_cmp_0", in.V.Ints[s.Start+n])
-						}
-						in.Save("_cmp_1", in.GetAny(string(action.Variables[1])))
-						o, t := in.EqualizeTypes("_cmp_0", "_cmp_1")
-						if equals := in.CompareName(o, t); equals {
-							in.Save(action.Target, true)
-							break
-						}
-					}
-				}
-			case "where":
-				err := in.CheckArgN(action, 2, 2)
-				if err {
-					return err
-				}
-				err = in.CheckDtype(action, 0, STR, LIST, SPAN)
-				if err {
-					return err
-				}
-				switch in.V.Slots[in.V.Names[string(action.Variables[0])]].Type {
-				case STR:
-					err = in.CheckDtype(action, 1, STR)
-					if err {
-						return err
-					}
-					in.Save(action.Target, big.NewInt(int64(strings.Index(in.NamedStr(string(action.Variables[0])), in.NamedStr(string(action.Variables[1]))))))
-				case LIST:
-					in.Save(action.Target, big.NewInt(-1))
-					l := in.NamedList(string(action.Variables[0]))
-					for n := range len(l.Ids) {
-						in.Save("_cmp_0", in.GetAnyRef(l.Ids[n]))
-						in.Save("_cmp_1", in.GetAny(string(action.Variables[1])))
-						o, t := in.EqualizeTypes("_cmp_0", "_cmp_1")
-						if equals := in.CompareName(o, t); equals {
-							in.Save(action.Target, big.NewInt(int64(n)))
-							break
-						}
-					}
-				case SPAN:
-					in.Save(action.Target, false)
-					s := in.NamedSpan(string(action.Variables[0]))
-					for n := range s.Length {
-						switch s.Dtype {
-						case INT:
-							// TODO: add more types
-							in.Save("_cmp_0", in.V.Ints[s.Start+n])
-						}
-						in.Save("_cmp_1", in.GetAny(string(action.Variables[1])))
-						o, t := in.EqualizeTypes("_cmp_0", "_cmp_1")
-						if equals := in.CompareName(o, t); equals {
-							in.Save(action.Target, big.NewInt(int64(n)))
-							break
-						}
-					}
-				}
-			case "check_type":
-				dtypes_map := map[byte]string{NOTH: "noth", INT: "int", FLOAT: "float", BYTE: "byte", STR: "str", FUNC: "func", SPAN: "span", ID: "id", LIST: "list", BOOL: "bool", PAIR: "pair", ARR: "arr"}
-				type_byte := in.Type(action.First())
-				type_string := in.NamedStr(action.Second()) // TODO TYPECHECK
-				if dtypes_map[type_byte] != type_string {
-					in.Error(action, fmt.Sprintf("type mismatch: %s instead of %s", type_string, dtypes_map[type_byte]), "type")
-					return true
-				}
-			case "type":
-				err := in.CheckArgN(action, 1, 1)
-				if err {
-					return err
-				}
-				in.Save(action.Target, map[byte]string{NOTH: "noth", INT: "int", FLOAT: "float", BYTE: "byte", STR: "str", FUNC: "func", SPAN: "span", ID: "id", LIST: "list", BOOL: "bool", PAIR: "pair", ARR: "arr"}[in.Type(action.First())])
-			default:
-				if fn.Node != "" {
-					// user functions start
-					f_in := Interpreter{V: &Vars{
-						Names: make(map[string]int),
-					}}
-					f_in.Id = rand.Uint64()
-					f_in.Copy(in)
-					for n, fn_arg := range fn.Vars {
-						if n == len(fn.Vars)-1 && len(action.Variables) > len(fn.Vars) {
-							last := bytecode.List{}
-							for _, lastlet := range action.Variables[len(fn.Vars)-1:] {
-								ListAppend(&last, &f_in, in.GetAny(string(lastlet)))
-							}
-							f_in.Save(string(fn_arg), last)
-							continue
-						}
-						fn_arg_str := string(fn_arg)
-						if in.Type(string(action.Variables[n])) == PAIR {
-							p := f_in.CopyPair(string(action.Variables[n]), in)
-							f_in.Save(fn_arg_str, p)
-						} else if in.Type(string(action.Variables[n])) == LIST {
-							l := f_in.CopyList(string(action.Variables[n]), in)
-							f_in.Save(fn_arg_str, l)
-						} else if in.Type(string(action.Variables[n])) == ID {
-							id := in.NamedId(string(action.Variables[n]))
-							f_in.Save(fn_arg_str, id)
-						} else if in.Type(string(action.Variables[n])) == SPAN {
-							s := f_in.CopySpan(string(action.Variables[n]), in)
-							f_in.Save(fn_arg_str, s)
-						} else {
-							f_in.Save(fn_arg_str, in.GetAny(string(action.Variables[n])))
-						}
-					}
-					err := f_in.Run(fn.Node)
-					in.ErrSource = f_in.ErrSource
-					if err {
-						return err
-					}
-					_, ok := f_in.V.Names["_return_"]
-					if !ok {
-						f_in.Nothing("_return_")
-					}
-					if f_in.V.Slots[f_in.V.Names["_return_"]].Type == LIST {
-						l := in.CopyList("_return_", &f_in)
-						in.Save(action.Target, l)
-					} else if f_in.V.Slots[f_in.V.Names["_return_"]].Type == PAIR {
-						l := in.CopyPair("_return_", &f_in)
-						in.Save(action.Target, l)
-					} else if f_in.V.Slots[f_in.V.Names["_return_"]].Type == SPAN {
-						l := in.CopySpan("_return_", &f_in)
-						in.Save(action.Target, l)
-					} else {
-						in.Save(action.Target, f_in.GetAny("_return_"))
-					}
-					f_in.Destroy()
-					// user functions end
-				} else {
-					_, ok := functionMap[action.Type]
-					if !ok {
 						in.Error(actions[focus], "Undeclared function!", "undeclared")
 						return true
+					}
+				} else {
+					outputs := in.LibFunc(action)
+					if len(outputs.Ids) == 1 {
+						in.Save(action.Target, in.GetAnyRef(outputs.Ids[0]))
 					} else {
-						outputs := in.LibFunc(action)
-						if len(outputs.Ids) == 1 {
-							in.Save(action.Target, in.GetAnyRef(outputs.Ids[0]))
-						} else {
-							in.Save(action.Target, outputs)
-						}
+						in.Save(action.Target, outputs)
 					}
 				}
 			}
+			// functions end
 		}
 		focus++
 	}
