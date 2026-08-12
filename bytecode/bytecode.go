@@ -90,7 +90,9 @@ func Unlink[T any](series []T) []T {
 	return append(empty, series...)
 }
 
-// MINT START
+type Nothing struct{}
+
+// MINT START (minimum templates)
 func regexToMap(compRegEx *regexp.Regexp, s string) map[string]string {
 	match := compRegEx.FindStringSubmatch(s)
 
@@ -833,6 +835,8 @@ func GetActs(tokens []Token, sl *SourceLine) []Action {
 			}
 			eq_id = n
 			break
+		} else if tok.Type == "DOLL" {
+			break
 		}
 	}
 	var targets_tok [][]Token
@@ -863,8 +867,9 @@ func GetActs(tokens []Token, sl *SourceLine) []Action {
 		case strings.HasPrefix(strings.TrimSpace(sl.Source), "$") || len(tokens) > 0 && Has(tokens, Token{"DOLL", ""}):
 			actions = append(actions, Action{TempName(), "$", []Variable{}, sl})
 			if len(targets) > 0 { // used to be `len(targets) > 0`
-				actions[len(actions)-1].Type = "$$"
 				actions[len(actions)-1].Target = targets[0]
+			} else {
+				actions[len(actions)-1].Type = "$$"
 			}
 			tokens = []Token{}
 			return actions
@@ -887,6 +892,11 @@ func GetActs(tokens []Token, sl *SourceLine) []Action {
 				actions = append(actions, Action{TempName(), "$", []Variable{Variable(t)}, sl})
 				tokens = []Token{{"WORD", t}}
 			*/
+		case len(tokens) == 2 && tokens[0].Type == "WORD" && tokens[0].Value == "global":
+			// global varname
+			varname := tokens[1].Value
+			actions = append(actions, Action{TempName(), "global", []Variable{Variable(varname)}, sl})
+			tokens = []Token{}
 		case len(tokens) > 1 && tokens[0].Type == "WORD" && tokens[0].Value == "repeat" && tokens[len(tokens)-1].Type == "LINK" && tokens[len(tokens)-2].Type == "COL":
 			actlet := GetActs(tokens[1:len(tokens)-2], sl)
 			var t string
@@ -1050,12 +1060,17 @@ func GetActs(tokens []Token, sl *SourceLine) []Action {
 			actlet := GetActs(expr, sl)
 			var targ string
 			if len(actlet) < 1 {
-				name := expr[0].Value
-				if expr[0].Type == "CONST" {
-					name = TempName()
-					actlet = append(actlet, Action{name, "const", []Variable{Variable(expr[0].Value)}, sl})
+				// Safety check for empty expressions
+				if len(expr) == 0 {
+					targ = TempName()
+				} else {
+					name := expr[0].Value
+					if expr[0].Type == "CONST" {
+						name = TempName()
+						actlet = append(actlet, Action{name, "const", []Variable{Variable(expr[0].Value)}, sl})
+					}
+					targ = name
 				}
-				targ = name
 			} else {
 				targ = actlet[len(actlet)-1].Target
 			}
@@ -1563,7 +1578,7 @@ type CallReply struct {
 // rpc END
 
 func GenerateFuns() []Function {
-	strs := []string{"print", "out", "where", "len", "stats", "except", "sleep", "read", "write", "remove", "isdir", "mkdir", "abs", "lower", "upper", "map", "jsonp", "check_type", "exit", "type", "convert", "list", "span", "array", "pair", "append", "system", "keys", "source", "library", "run", "runf", "sort", "id", "ternary", "rand", "input", "glob", "global", "env", "range", "fmt", "chdir", "split", "join", "cp", "mv", "rm", "pop", "itc", "cti", "has", "index", "replace", "re_match", "re_find", "rget", "rpost", "arrm", "value", "sub", "html_set_inner"}
+	strs := []string{"print", "out", "where", "len", "stats", "except", "sleep", "read", "write", "remove", "isdir", "mkdir", "abs", "lower", "upper", "map", "jsonp", "check_type", "exit", "type", "convert", "list", "span", "array", "pair", "append", "system", "keys", "source", "library", "run", "runf", "sort", "id", "ternary", "rand", "input", "glob", "global", "sync", "env", "range", "fmt", "chdir", "split", "join", "cp", "mv", "rm", "pop", "itc", "cti", "has", "index", "replace", "re_match", "re_find", "rget", "rpost", "arrm", "value", "sub", "html_set_inner"}
 	fs := []Function{}
 	for _, str := range strs {
 		fs = append(fs, Function{Name: str})
@@ -1598,6 +1613,7 @@ func GenerateFunsFull() []Function {
 		"input",
 		"glob",
 		"global",
+		"sync",
 		"env",
 		"range",
 		"fmt",

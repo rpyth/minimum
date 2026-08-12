@@ -48,6 +48,98 @@ func ternary[T any](cond bool, if_true, if_false T) T {
 	}
 }
 
+type Gl struct {
+	InterID map[uint64]*Interpreter
+	mu      sync.Mutex
+}
+
+// check if the variable exists across all interpreters
+func (gl *Gl) Exists(name string) bool {
+	gl.mu.Lock()
+	defer gl.mu.Unlock()
+	for _, inter := range gl.InterID {
+		if _, ok := inter.V.Names[name]; ok {
+			if inter.V.Names[name] < len(inter.V.Slots) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// check if the variable exists across all interpreters
+func (gl *Gl) FindInter(name string) *Interpreter {
+	gl.mu.Lock()
+	defer gl.mu.Unlock()
+	for _, inter := range gl.InterID {
+		if _, ok := inter.V.Names[name]; ok {
+			if inter.V.Names[name] < len(inter.V.Slots) {
+				return inter
+			}
+		}
+	}
+	return nil
+}
+
+func (gl *Gl) Register(in *Interpreter) {
+	gl.mu.Lock()
+	defer gl.mu.Unlock()
+	gl.InterID[in.Id] = in
+}
+
+func (gl *Gl) Del(in *Interpreter) {
+	gl.mu.Lock()
+	defer gl.mu.Unlock()
+	delete(gl.InterID, in.Id)
+}
+func (gl *Gl) SaveGlobal(in *Interpreter, name string, val any) {
+	accessible := []*Interpreter{}
+	accessible = append(accessible, in)
+	for in.Parent != nil {
+		accessible = append(accessible, in.Parent)
+		in = in.Parent
+	}
+	for _, in := range accessible[1:] {
+		if _, ok := in.V.Names[name]; ok {
+			type_byte := TypeToByte(val)
+			switch type_byte {
+			case LIST:
+				v := in.CopyList(name, accessible[0])
+				in.Save(name, v)
+			case PAIR:
+				v := in.CopyPair(name, accessible[0])
+				in.Save(name, v)
+			case SPAN:
+				v := in.CopySpan(name, accessible[0])
+				in.Save(name, v)
+			default:
+				in.Save(name, val)
+			}
+			break
+		}
+	}
+	accessible[0].Save(name, val)
+}
+
+func (gl *Gl) ExistsHere(in *Interpreter, name string) bool {
+	accessible := []*Interpreter{}
+	accessible = append(accessible, in)
+	for in.Parent != nil {
+		accessible = append(accessible, in.Parent)
+		in = in.Parent
+	}
+	for _, in := range accessible[:] {
+		if _, ok := in.V.Names[name]; ok {
+			return true
+		}
+	}
+	return false
+}
+
+var GInt = Gl{
+	InterID: make(map[uint64]*Interpreter),
+}
+
 type Entry struct {
 	Type  byte
 	Index int
@@ -112,6 +204,7 @@ func (in *Interpreter) SpawnProcess(node string, targetList, childItem string, c
 		Names: make(map[string]int),
 	}}
 	child.Id = rand.Uint64()
+	GInt.Register(child)
 	child.Copy(in)
 	for _, c := range copies {
 		child.Save(c, in.GetAny(c))
@@ -169,6 +262,89 @@ func TypeToByte(a any) byte {
 }
 
 func (in *Interpreter) Save(name string, v any) {
+	old_address, ok := in.V.Names[name]
+	if !ok || strings.HasPrefix(name, "_temp_") || in.V.Slots[old_address].Type != TypeToByte(v) {
+		entry := Entry{TypeToByte(v), 0}
+		switch val := v.(type) {
+		case *big.Int:
+			entry.Index = len(in.V.Ints)
+			in.V.Ints = append(in.V.Ints, val)
+		case *big.Float:
+			entry.Index = len(in.V.Floats)
+			in.V.Floats = append(in.V.Floats, val)
+		case string:
+			entry.Index = len(in.V.Strs)
+			in.V.Strs = append(in.V.Strs, val)
+		case byte:
+			entry.Index = len(in.V.Bytes)
+			in.V.Bytes = append(in.V.Bytes, val)
+		case bool:
+			entry.Index = len(in.V.Bools)
+			in.V.Bools = append(in.V.Bools, val)
+		case *bytecode.MinPtr:
+			entry.Index = len(in.V.Ids)
+			in.V.Ids = append(in.V.Ids, val)
+		case bytecode.List:
+			entry.Index = len(in.V.Lists)
+			in.V.Lists = append(in.V.Lists, val)
+		case bytecode.Array:
+			entry.Index = len(in.V.Arrs)
+			in.V.Arrs = append(in.V.Arrs, val)
+		case bytecode.Pair:
+			entry.Index = len(in.V.Pairs)
+			in.V.Pairs = append(in.V.Pairs, val)
+		case *bytecode.Function:
+			entry.Index = len(in.V.Funcs)
+			in.V.Funcs = append(in.V.Funcs, val)
+		case bytecode.Span:
+			entry.Index = len(in.V.Spans)
+			in.V.Spans = append(in.V.Spans, val)
+		case int16:
+			in.Nothing(name)
+			return
+		case bytecode.Nothing:
+			in.Nothing(name)
+			return
+		}
+		in.V.Names[name] = len(in.V.Slots)
+		in.V.Slots = append(in.V.Slots, entry)
+	} else {
+		// reused variable
+		switch in.V.Slots[old_address].Type {
+		case INT:
+			in.V.Ints[in.V.Slots[old_address].Index] = v.(*big.Int)
+		case FLOAT:
+			in.V.Floats[in.V.Slots[old_address].Index] = v.(*big.Float)
+		case STR:
+			in.V.Strs[in.V.Slots[old_address].Index] = v.(string)
+		case BYTE:
+			in.V.Bytes[in.V.Slots[old_address].Index] = v.(byte)
+		case BOOL:
+			in.V.Bools[in.V.Slots[old_address].Index] = v.(bool)
+		case LIST:
+			in.V.Lists[in.V.Slots[old_address].Index] = v.(bytecode.List)
+		case ID:
+			in.V.Ids[in.V.Slots[old_address].Index] = v.(*bytecode.MinPtr)
+		case ARR:
+			in.V.Arrs[in.V.Slots[old_address].Index] = v.(bytecode.Array)
+		case SPAN:
+			in.V.Spans[in.V.Slots[old_address].Index] = v.(bytecode.Span)
+		case FUNC:
+			in.V.Funcs[in.V.Slots[old_address].Index] = v.(*bytecode.Function)
+		case NOTH:
+			in.Nothing(name)
+		case PAIR:
+			in.V.Pairs[in.V.Slots[old_address].Index] = v.(bytecode.Pair)
+		}
+	}
+}
+
+func (in *Interpreter) SaveOld(name string, v any) {
+	// experimental start
+	if old_id, ok := in.V.Names[name]; ok && old_id >= len(in.V.Slots) {
+		delete(in.V.Names, name)
+	}
+	// experimental end
 	if old_id, ok := in.V.Names[name]; ok {
 		if TypeToByte(v) == in.V.Slots[old_id].Type {
 			// value reassignment
@@ -202,6 +378,18 @@ func (in *Interpreter) Save(name string, v any) {
 		}
 		// "else" will be handled by GC
 	}
+	// check if the parents already have the variable
+	/*
+		parent := in.Parent
+		for parent != nil {
+			if _, ok := parent.V.Names[name]; ok {
+				parent.Save(name, v)
+				return
+			}
+			parent = parent.Parent
+		}
+	*/
+	// check end
 	entry := Entry{TypeToByte(v), 0}
 	switch val := v.(type) {
 	case *big.Int:
@@ -240,9 +428,13 @@ func (in *Interpreter) Save(name string, v any) {
 	case int16:
 		in.Nothing(name)
 		return
+	case bytecode.Nothing:
+		in.Nothing(name)
+		return
 	}
 	in.V.Names[name] = len(in.V.Slots)
 	in.V.Slots = append(in.V.Slots, entry)
+	//fmt.Printf("Saved '%s' as %v\n", name, v)
 }
 
 func (in *Interpreter) SaveRef(old_id *bytecode.MinPtr, v any) {
@@ -369,6 +561,36 @@ func (in *Interpreter) SaveRefNew(v any) *bytecode.MinPtr {
 }
 
 func (in *Interpreter) GetAny(var_name string) any {
+	if strings.HasPrefix(var_name, "_temp_") {
+		idx, ok := in.V.Names[var_name]
+		if !ok || idx >= len(in.V.Slots) {
+			return bytecode.Nothing{}
+		}
+		switch in.V.Slots[idx].Type {
+		case INT:
+			return in.V.Ints[in.V.Slots[idx].Index]
+		case FLOAT:
+			return in.V.Floats[in.V.Slots[idx].Index]
+		case STR:
+			return in.V.Strs[in.V.Slots[idx].Index]
+		case BOOL:
+			return in.V.Bools[in.V.Slots[idx].Index]
+		case BYTE:
+			return in.V.Bytes[in.V.Slots[idx].Index]
+		case LIST:
+			return in.V.Lists[in.V.Slots[idx].Index]
+		case PAIR:
+			return in.V.Pairs[in.V.Slots[idx].Index]
+		case SPAN:
+			return in.V.Spans[in.V.Slots[idx].Index]
+		case ID:
+			return in.V.Ids[in.V.Slots[idx].Index]
+		case FUNC:
+			return in.V.Funcs[in.V.Slots[idx].Index]
+		default:
+			return bytecode.Nothing{}
+		}
+	}
 	switch in.Type(var_name) {
 	case INT:
 		return in.NamedInt(var_name)
@@ -393,7 +615,7 @@ func (in *Interpreter) GetAny(var_name string) any {
 	case PAIR:
 		return in.NamedPair(var_name)
 	case NOTH:
-		return int16(0)
+		return bytecode.Nothing{}
 	}
 	return nil
 }
@@ -460,6 +682,7 @@ func PairKey(in *Interpreter, iname any) string {
 func NewInterpreter(code, file string) Interpreter {
 	in := Interpreter{}
 	in.Id = rand.Uint64()
+	GInt.Register(&in)
 	in.Code = bytecode.GetCode(code)
 	in.File = &file
 	in.V = &Vars{}
@@ -475,6 +698,7 @@ func NewInterpreter(code, file string) Interpreter {
 func NewInterpreterPtr(code, file string) *Interpreter {
 	in := &Interpreter{}
 	in.Id = rand.Uint64()
+	GInt.Register(in)
 	in.Code = bytecode.GetCode(code)
 	in.File = &file
 	in.V = &Vars{}
@@ -492,6 +716,7 @@ func NewInterId(code, file string, parent *Interpreter) *Interpreter {
 	inter_id := rand.Uint64()
 	in := Interpreter{}
 	in.Id = inter_id
+	GInt.Register(&in)
 	if len(code) > 0 {
 		in.Code = bytecode.GetCode(code)
 		in.File = &file
@@ -969,6 +1194,9 @@ func (in *Interpreter) GCE() {
 		if strings.HasPrefix(name, "_temp_") {
 			continue
 		}
+		if slotIdx >= len(old.Slots) {
+			continue
+		}
 		oldEntry := old.Slots[slotIdx]
 		newIndex := copyEntry(oldEntry)
 		newSlotIndex := len(newVars.Slots) // new slot index
@@ -1017,6 +1245,7 @@ func (in *Interpreter) Compile(code, fname string) {
 		Names: make(map[string]int),
 	}}
 	in2.Id = rand.Uint64()
+	GInt.Register(&in2)
 	in2.Code = bytecode.GetCode(code)
 	in2.File = &fname
 	for key := range in2.Code {
@@ -1089,7 +1318,7 @@ func (in *Interpreter) GetSlot(name string) Entry {
 }
 
 func (in *Interpreter) CheckDtype(action bytecode.Action, index int, dtypes ...byte) bool {
-	dstrings := map[byte]string{0: "noth", 1: "int", 2: "float", 3: "str", 4: "arr", 5: "list", 6: "pair", 7: "bool", 8: "byte", 9: "func", 10: "id", SPAN: "span"}
+	dstrings := map[byte]string{NOTH: "noth", INT: "int", FLOAT: "float", STR: "str", ARR: "arr", LIST: "list", PAIR: "pair", BOOL: "bool", BYTE: "byte", FUNC: "func", ID: "id", SPAN: "span"}
 	found := false
 	for _, dtype := range dtypes {
 		// in.V.Slots[in.V.Names[string(action.Variables[index])]].Type
@@ -1958,6 +2187,10 @@ func GetParts(text string) []string {
 }
 
 func (in *Interpreter) Fmt(str string) string {
+	// First, handle escaped braces by replacing them with placeholder tokens
+	str = strings.ReplaceAll(str, "\\{", "\x00LBRACE\x00")
+	str = strings.ReplaceAll(str, "\\}", "\x00RBRACE\x00")
+
 	reg_var := regexp.MustCompile(`\{.+?\}`)
 	for _, match := range reg_var.FindAllString(str, -1) {
 		code := match[1 : len(match)-1]
@@ -1986,7 +2219,7 @@ func (in *Interpreter) Fmt(str string) string {
 			}
 			str = strings.ReplaceAll(str, match, text)
 		} else {
-			// TODO: ###
+			// Evaluate expressions inside braces
 			in_p := NewInterpreter(code, ".")
 			for name := range in.V.Names {
 				in_p.Save(name, in.GetAny(name))
@@ -2020,6 +2253,11 @@ func (in *Interpreter) Fmt(str string) string {
 			in_p.Destroy()
 		}
 	}
+
+	// Restore escaped braces as literal characters
+	str = strings.ReplaceAll(str, "\x00LBRACE\x00", "{")
+	str = strings.ReplaceAll(str, "\x00RBRACE\x00", "}")
+
 	return str
 }
 
@@ -2160,13 +2398,13 @@ func (in *Interpreter) Run(node_name string) bool {
 			}
 		case "+":
 			o, t := in.EqualizeTypes(string(actions[focus].Variables[0]), string(actions[focus].Variables[1]))
-			switch in.V.Slots[in.V.Names[o]].Type {
+			switch in.Type(o) {
 			case INT:
 				in.Save(actions[focus].Target, big.NewInt(0))
-				in.V.Ints[in.V.Slots[in.V.Names[actions[focus].Target]].Index].Add(in.V.Ints[in.V.Slots[in.V.Names[o]].Index], in.V.Ints[in.V.Slots[in.V.Names[t]].Index])
+				in.V.Ints[in.V.Slots[in.V.Names[actions[focus].Target]].Index].Add(in.NamedInt(o), in.NamedInt(t))
 			case FLOAT:
 				in.Save(actions[focus].Target, big.NewFloat(0))
-				in.V.Floats[in.V.Slots[in.V.Names[actions[focus].Target]].Index].Add(in.V.Floats[in.V.Slots[in.V.Names[o]].Index], in.V.Floats[in.V.Slots[in.V.Names[t]].Index])
+				in.V.Floats[in.V.Slots[in.V.Names[actions[focus].Target]].Index].Add(in.NamedFloat(o), in.NamedFloat(t))
 			case STR:
 				err := in.CheckDtype(action, 1, STR)
 				if err {
@@ -2183,6 +2421,49 @@ func (in *Interpreter) Run(node_name string) bool {
 					l2.Ids = append(l2.Ids, ptr)
 				}
 				in.Save(action.Target, l2)
+			case SPAN:
+				s0, s1 := in.NamedSpan(action.First()), in.NamedSpan(action.Second())
+				// Check that both spans have the same data type
+				if s0.Dtype != s1.Dtype {
+					in.Error(action, fmt.Sprintf("cannot concatenate spans of different types: %s and %s", bytecode.TypeStr(s0.Dtype), bytecode.TypeStr(s1.Dtype)), "arg_type")
+					return true
+				}
+
+				// Create new span with combined length
+				newSpan := in.NewSpan(int(s0.Length+s1.Length), s0.Dtype)
+
+				// Copy data from both spans based on their type
+				switch s0.Dtype {
+				case INT:
+					copy(in.V.Ints[newSpan.Start:newSpan.Start+s0.Length], in.V.Ints[s0.Start:s0.Start+s0.Length])
+					copy(in.V.Ints[newSpan.Start+s0.Length:newSpan.Start+s0.Length+s1.Length], in.V.Ints[s1.Start:s1.Start+s1.Length])
+				case FLOAT:
+					copy(in.V.Floats[newSpan.Start:newSpan.Start+s0.Length], in.V.Floats[s0.Start:s0.Start+s0.Length])
+					copy(in.V.Floats[newSpan.Start+s0.Length:newSpan.Start+s0.Length+s1.Length], in.V.Floats[s1.Start:s1.Start+s1.Length])
+				case BYTE:
+					copy(in.V.Bytes[newSpan.Start:newSpan.Start+s0.Length], in.V.Bytes[s0.Start:s0.Start+s0.Length])
+					copy(in.V.Bytes[newSpan.Start+s0.Length:newSpan.Start+s0.Length+s1.Length], in.V.Bytes[s1.Start:s1.Start+s1.Length])
+				case BOOL:
+					copy(in.V.Bools[newSpan.Start:newSpan.Start+s0.Length], in.V.Bools[s0.Start:s0.Start+s0.Length])
+					copy(in.V.Bools[newSpan.Start+s0.Length:newSpan.Start+s0.Length+s1.Length], in.V.Bools[s1.Start:s1.Start+s1.Length])
+				case STR:
+					copy(in.V.Strs[newSpan.Start:newSpan.Start+s0.Length], in.V.Strs[s0.Start:s0.Start+s0.Length])
+					copy(in.V.Strs[newSpan.Start+s0.Length:newSpan.Start+s0.Length+s1.Length], in.V.Strs[s1.Start:s1.Start+s1.Length])
+				case FUNC:
+					copy(in.V.Funcs[newSpan.Start:newSpan.Start+s0.Length], in.V.Funcs[s0.Start:s0.Start+s0.Length])
+					copy(in.V.Funcs[newSpan.Start+s0.Length:newSpan.Start+s0.Length+s1.Length], in.V.Funcs[s1.Start:s1.Start+s1.Length])
+				case LIST:
+					copy(in.V.Lists[newSpan.Start:newSpan.Start+s0.Length], in.V.Lists[s0.Start:s0.Start+s0.Length])
+					copy(in.V.Lists[newSpan.Start+s0.Length:newSpan.Start+s0.Length+s1.Length], in.V.Lists[s1.Start:s1.Start+s1.Length])
+				case PAIR:
+					copy(in.V.Pairs[newSpan.Start:newSpan.Start+s0.Length], in.V.Pairs[s0.Start:s0.Start+s0.Length])
+					copy(in.V.Pairs[newSpan.Start+s0.Length:newSpan.Start+s0.Length+s1.Length], in.V.Pairs[s1.Start:s1.Start+s1.Length])
+				case ID:
+					copy(in.V.Ids[newSpan.Start:newSpan.Start+s0.Length], in.V.Ids[s0.Start:s0.Start+s0.Length])
+					copy(in.V.Ids[newSpan.Start+s0.Length:newSpan.Start+s0.Length+s1.Length], in.V.Ids[s1.Start:s1.Start+s1.Length])
+				}
+
+				in.Save(action.Target, newSpan)
 			case BYTE:
 				in.Save(actions[focus].Target, in.NamedByte(o)+in.NamedByte(t))
 			}
@@ -2452,6 +2733,7 @@ func (in *Interpreter) Run(node_name string) bool {
 			for range cores {
 				f_in := &Interpreter{V: &Vars{Names: make(map[string]int)}}
 				f_in.Id = rand.Uint64()
+				GInt.Register(f_in)
 				f_in.Copy2(in)
 				for n, left := range input_lefts {
 					chunks := in.NamedList(input_lefts[n]).Ids[int(math.Round(focus)):int(math.Round(focus+step))]
@@ -2563,6 +2845,7 @@ func (in *Interpreter) Run(node_name string) bool {
 				// create worker interpreter copy
 				f_in := &Interpreter{V: &Vars{Names: make(map[string]int)}}
 				f_in.Id = rand.Uint64()
+				GInt.Register(f_in)
 				f_in.Copy2(in)
 
 				chunkNames := []string{}
@@ -2654,7 +2937,7 @@ func (in *Interpreter) Run(node_name string) bool {
 				in.V.Ints[in.V.Slots[in.V.Names[action.Target]].Index].Sub(in.V.Ints[slot.Index], big.NewInt(1))
 			}
 		case "=":
-			in.Save(action.Target, in.GetAny(string(actions[focus].Variables[0])))
+			in.Save(action.Target, in.GetAny(action.First()))
 			/*
 				switch in.GetSlot(string(action.Variables[0])).Type {
 				case INT:
@@ -2695,6 +2978,39 @@ func (in *Interpreter) Run(node_name string) bool {
 				_, ok = interp.V.Names[action.Target]
 			}
 			interp.Save(action.Target, in.GetAny(action.First()))
+		case "sync":
+			for _, v := range action.Variables {
+				variable := string(v)
+				val := in.GetAny(variable)
+				GInt.SaveGlobal(in, variable, val)
+			}
+		case "global":
+			// Mark variable as global - it will reference the root interpreter's slot
+			err := in.CheckArgN(action, 1, 1)
+			if err {
+				return err
+			}
+			varname := string(action.Variables[0])
+
+			// Find the root interpreter
+			root := in
+			for root.Parent != nil {
+				root = root.Parent
+			}
+
+			// If the variable exists at root, create a reference to it
+			if slotId, ok := root.V.Names[varname]; ok {
+				in.V.Names[varname] = slotId
+			} else {
+				// Variable doesn't exist at root yet, create placeholder that will reference root
+				// When the variable is first assigned, it will be created at root
+				// For now, just mark it in a way that Save() can detect
+				// We'll modify Save() to check if variable name starts with a marker
+				// Actually, simpler: create the slot at root now
+				root.Save(varname, byte(0))
+				root.V.Slots[root.V.Names[varname]].Type = NOTH
+				in.V.Names[varname] = root.V.Names[varname]
+			}
 		case "repeat":
 			err := in.CheckArgN(action, 1, 1)
 			if err {
@@ -3013,8 +3329,17 @@ func (in *Interpreter) Run(node_name string) bool {
 			return true
 		case "$":
 			text_command := strings.TrimSpace(strings.SplitN(action.Source.Source, "$", 2)[1])
-			arguments := in.Parse(text_command)
-			cmd := exec.Command(arguments[0], arguments[1:]...)
+			// Apply fmt-style interpolation to the command
+			text_command = in.Fmt(text_command)
+
+			// Use OS-specific shell for command execution
+			var cmd *exec.Cmd
+			if runtime.GOOS == "windows" {
+				cmd = exec.Command("powershell", "-c", text_command)
+			} else {
+				cmd = exec.Command("sh", "-c", text_command)
+			}
+
 			cmd.Stderr = os.Stderr
 			cmd.Stdin = os.Stdin
 			cmd.Stdout = os.Stdout
@@ -3025,8 +3350,17 @@ func (in *Interpreter) Run(node_name string) bool {
 			}
 		case "$$":
 			text_command := strings.TrimSpace(strings.SplitN(action.Source.Source, "$", 2)[1])
-			arguments := in.Parse(text_command)
-			cmd := exec.Command(arguments[0], arguments[1:]...)
+			// Apply fmt-style interpolation to the command
+			text_command = in.Fmt(text_command)
+
+			// Use OS-specific shell for command execution
+			var cmd *exec.Cmd
+			if runtime.GOOS == "windows" {
+				cmd = exec.Command("cmd.exe", "/c", text_command)
+			} else {
+				cmd = exec.Command("sh", "-c", text_command)
+			}
+
 			out, go_err := cmd.CombinedOutput()
 			if go_err != nil {
 				in.Error(action, fmt.Sprintf("Error executing command: %v", go_err), "sys")
@@ -3047,6 +3381,7 @@ func (in *Interpreter) Run(node_name string) bool {
 					Names: make(map[string]int),
 				}}
 				f_in.Id = rand.Uint64()
+				GInt.Register(&f_in)
 				f_in.Copy(in)
 				for n, fn_arg := range fn.Vars {
 					if n == len(fn.Vars)-1 && len(action.Variables) > len(fn.Vars) {
@@ -3080,20 +3415,21 @@ func (in *Interpreter) Run(node_name string) bool {
 					return err
 				}
 				_, ok := f_in.V.Names["_return_"]
-				if !ok {
+				if !ok || f_in.V.Names["_return_"] >= len(f_in.V.Slots) {
 					f_in.Nothing("_return_")
-				}
-				if f_in.V.Slots[f_in.V.Names["_return_"]].Type == LIST {
-					l := in.CopyList("_return_", &f_in)
-					in.Save(action.Target, l)
-				} else if f_in.V.Slots[f_in.V.Names["_return_"]].Type == PAIR {
-					l := in.CopyPair("_return_", &f_in)
-					in.Save(action.Target, l)
-				} else if f_in.V.Slots[f_in.V.Names["_return_"]].Type == SPAN {
-					l := in.CopySpan("_return_", &f_in)
-					in.Save(action.Target, l)
 				} else {
-					in.Save(action.Target, f_in.GetAny("_return_"))
+					if f_in.V.Slots[f_in.V.Names["_return_"]].Type == LIST {
+						l := in.CopyList("_return_", &f_in)
+						in.Save(action.Target, l)
+					} else if f_in.V.Slots[f_in.V.Names["_return_"]].Type == PAIR {
+						l := in.CopyPair("_return_", &f_in)
+						in.Save(action.Target, l)
+					} else if f_in.V.Slots[f_in.V.Names["_return_"]].Type == SPAN {
+						l := in.CopySpan("_return_", &f_in)
+						in.Save(action.Target, l)
+					} else {
+						in.Save(action.Target, f_in.GetAny("_return_"))
+					}
 				}
 				f_in.Destroy()
 				// user functions end
@@ -3748,6 +4084,7 @@ func (in *Interpreter) Run(node_name string) bool {
 										Names: make(map[string]int),
 									}}
 									f_in.Id = rand.Uint64()
+									GInt.Register(&f_in)
 									f_in.Copy(in)
 									f_in.Save(string(fn.Vars[0]), in.GetAnyRef(in.NamedList(action.First()).Ids[ptr]))
 									err := f_in.Run(fn.Node)
@@ -3800,6 +4137,7 @@ func (in *Interpreter) Run(node_name string) bool {
 										Names: make(map[string]int),
 									}}
 									f_in.Id = rand.Uint64()
+									GInt.Register(&f_in)
 									f_in.Copy(in)
 									f_in.Save("_item_", in.GetAnyRef(in.NamedList(action.First()).Ids[ptr]))
 									action2 := bytecode.Action{}
@@ -3863,6 +4201,7 @@ func (in *Interpreter) Run(node_name string) bool {
 										Names: make(map[string]int),
 									}}
 									f_in.Id = rand.Uint64()
+									GInt.Register(&f_in)
 									f_in.Copy(in)
 									f_in.Save("item", in.GetAnyRef(in.NamedList(action.First()).Ids[ptr]))
 									err := f_in.Run(node_name_sort)
@@ -3976,7 +4315,7 @@ func (in *Interpreter) Run(node_name string) bool {
 							exe, _ := os.Executable()
 							in.Save(action.Target, exe)
 						case "version":
-							in.Save(action.Target, "4.3.8")
+							in.Save(action.Target, "4.3.9")
 						case "args":
 							l := bytecode.List{}
 							for _, arg := range os.Args {
@@ -4637,14 +4976,23 @@ func PoolWorkerNewLegacy(
 
 // UTIL FUNCTIONS
 func (in *Interpreter) Nothing(name string) {
-	interp := in
-	for interp.Parent != nil {
-		if slot_id, ok := interp.V.Names["Nothing"]; !ok {
-			interp = interp.Parent
-		} else if interp.V.Slots[slot_id].Type == NOTH {
+	// Check if the current interpreter already has this variable
+	if _, ok := in.V.Names[name]; ok && in.V.Names[name] < len(in.V.Slots) {
+		// fmt.Printf("DEBUG Nothing(%q): already in current scope, returning\n", name)
+		return
+	}
+	// Check if any ancestor interpreter has this variable (declared in outer scope)
+	// If so, don't shadow it with a local NOTH — let the ancestor's value be visible
+	interp := in.Parent
+	for interp != nil {
+		if _, ok := interp.V.Names[name]; ok && interp.V.Names[name] < len(interp.V.Slots) {
+			// fmt.Printf("DEBUG Nothing(%q): found in ancestor scope, not shadowing\n", name)
 			return
 		}
+		interp = interp.Parent
 	}
+	// Variable doesn't exist anywhere — create a local NOTH slot
+	// fmt.Printf("DEBUG Nothing(%q): creating local NOTH slot\n", name)
 	in.Save(name, byte(0))
 	in.V.Slots[in.V.Names[name]].Type = NOTH
 }
@@ -4653,7 +5001,10 @@ func (in *Interpreter) Type(name string) byte {
 	if _, ok := in.V.Names[name]; !ok {
 		return in.Parent.Type(name)
 	}
-	return in.V.Slots[in.V.Names[name]].Type
+	if in.V.Names[name] < len(in.V.Slots) {
+		return in.V.Slots[in.V.Names[name]].Type
+	}
+	return NOTH
 }
 
 func (in *Interpreter) IndexList(l bytecode.List, ind_any any) (any, error) {
@@ -4944,9 +5295,9 @@ func (in *Interpreter) Destroy() {
 	//for key := range in.V.Names {
 	//	in.RemoveName(key)
 	//}
-
+	GInt.Del(in)
 	in.GCE()
-	in = &Interpreter{}
+	in = nil // &Interpreter{}
 }
 
 func (in *Interpreter) CopyListDeep(l bytecode.List, og *Interpreter) bytecode.List {
@@ -5121,6 +5472,7 @@ func ServerHandler(w http.ResponseWriter, r *http.Request) {
 			Id:   rand.Uint64(),
 			Code: make(map[string][]bytecode.Action),
 		}
+		GInt.Register(ServerInterpreter)
 	}
 
 	result := ServerInterpreter.RunJson(req, compile == "")
