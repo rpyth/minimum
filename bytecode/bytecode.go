@@ -351,6 +351,17 @@ func DotConst(tokens []Token) []Token {
 	return tokens
 }
 
+func oop2(tokens []Token) []Token {
+	for n := range len(tokens) {
+		if n > 0 && tokens[n].Type == "DOT" && tokens[n-1].Type == "WORD" {
+			ind := n
+			tokens[ind] = Token{"SUB", ""}
+			tokens[ind+1] = Token{"CONST", "\"" + tokens[ind+1].Value + "\""}
+		}
+	}
+	return Unlink(tokens)
+}
+
 func oop(tokens []Token) []Token {
 	if Has(tokens, Token{"DOT", ""}) {
 		ind := 0
@@ -450,7 +461,7 @@ func Tokenize(sourcestr string) []Token {
 	}
 	output = unary(output)
 	output = DotConst(output)
-	output = oop(output)
+	output = oop2(output)
 	return output
 }
 
@@ -868,8 +879,9 @@ func GetActs(tokens []Token, sl *SourceLine) []Action {
 			actions = append(actions, Action{TempName(), "$", []Variable{}, sl})
 			if len(targets) > 0 { // used to be `len(targets) > 0`
 				actions[len(actions)-1].Target = targets[0]
-			} else {
 				actions[len(actions)-1].Type = "$$"
+			} else {
+				// ...
 			}
 			tokens = []Token{}
 			return actions

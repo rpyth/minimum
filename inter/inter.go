@@ -2289,7 +2289,7 @@ func (in *Interpreter) Stringify(v any) string {
 }
 
 var RL = input.Rl
-var protected_actions = []string{"for", "const", "pool", "error", "func", "process"}
+var protected_actions = []string{"for", "const", "pool", "error", "func", "process", "."}
 
 func (in *Interpreter) RunSort(ftype string, sl *bytecode.SourceLine) bool {
 	node_name := fmt.Sprintf("_runner_%x", rand.Int64())
@@ -2466,6 +2466,23 @@ func (in *Interpreter) Run(node_name string) bool {
 				in.Save(action.Target, newSpan)
 			case BYTE:
 				in.Save(actions[focus].Target, in.NamedByte(o)+in.NamedByte(t))
+			case PAIR:
+				err := in.Method(action, "add")
+				if err {
+					return err
+				}
+			}
+		case ".":
+			p := in.NamedPair(string(action.Variables[0]))
+			ind := PairKey(in, string(action.Variables[1]))
+			if _, ok := p.Ids[ind]; !ok {
+				in.Error(action, fmt.Sprintf("invalid pairing key: %s", strings.SplitN(ind, ":", 2)[1]), "index")
+				return true
+			}
+			if action.Type == "." {
+				in.Save(action.Target, in.GetAnyRef(p.Ids[ind]))
+			} else {
+				in.V.Names[actions[focus].Target] = int(p.Ids[ind].Addr)
 			}
 		case "'", "''":
 			err := in.CheckArgN(action, 2, 2)
@@ -2590,6 +2607,11 @@ func (in *Interpreter) Run(node_name string) bool {
 				in.V.Floats[in.V.Slots[in.V.Names[actions[focus].Target]].Index].Sub(in.V.Floats[in.V.Slots[in.V.Names[o]].Index], in.V.Floats[in.V.Slots[in.V.Names[t]].Index])
 			case BYTE:
 				in.Save(actions[focus].Target, in.NamedByte(o)-in.NamedByte(t))
+			case PAIR:
+				err := in.Method(action, "sub")
+				if err {
+					return err
+				}
 			}
 		case "*":
 			o, t := in.EqualizeTypes(string(actions[focus].Variables[0]), string(actions[focus].Variables[1]))
@@ -2618,6 +2640,11 @@ func (in *Interpreter) Run(node_name string) bool {
 			case BYTE:
 				// TODO: make it work according to the spec
 				in.Save(actions[focus].Target, in.NamedByte(o)/in.NamedByte(t))
+			case PAIR:
+				err := in.Method(action, "div")
+				if err {
+					return err
+				}
 			}
 		case "//":
 			o, t := in.EqualizeTypes(string(actions[focus].Variables[0]), string(actions[focus].Variables[1]))
@@ -2638,6 +2665,11 @@ func (in *Interpreter) Run(node_name string) bool {
 			case BYTE:
 				// TODO: make it work according to the spec
 				in.Save(actions[focus].Target, in.NamedByte(o)/in.NamedByte(t))
+			case PAIR:
+				err := in.Method(action, "ddiv")
+				if err {
+					return err
+				}
 			}
 		case "%":
 			o, t := in.EqualizeTypes(string(actions[focus].Variables[0]), string(actions[focus].Variables[1]))
@@ -2651,6 +2683,11 @@ func (in *Interpreter) Run(node_name string) bool {
 				in.V.Floats[in.V.Slots[in.V.Names[actions[focus].Target]].Index].Sub(in.V.Floats[in.V.Slots[in.V.Names[o]].Index], in.V.Floats[in.V.Slots[in.V.Names[t]].Index])
 			case BYTE:
 				in.Save(actions[focus].Target, in.NamedByte(o)-in.NamedByte(t))
+			case PAIR:
+				err := in.Method(action, "mod")
+				if err {
+					return err
+				}
 			}
 		case "^":
 			one, two := in.EqualizeTypes(string(action.Variables[0]), string(action.Variables[1]))
@@ -2663,9 +2700,21 @@ func (in *Interpreter) Run(node_name string) bool {
 				t, _ := in.NamedFloat(two).Float64()
 				in.Save(action.Target, big.NewFloat(math.Pow(o, t)))
 			case BYTE:
-				// TODO:
-				//in.V.Bytes[in.V.Names[action.Target]] = byte(math.Pow(float64(in.V.Bytes[in.V.Names[string(action.Variables[0])]]), float64(in.V.Bytes[in.V.Names[string(action.Variables[1])]])))
-				//in.V.Types[in.V.Names[action.Target]] = BYTE
+				base, exponent := in.NamedByte(one), in.NamedByte(two)
+				result := byte(1)
+				for exponent != 0 {
+					if exponent&1 != 0 {
+						result *= base
+					}
+					exponent >>= 1
+					base *= base
+				}
+				in.Save(action.Target, result)
+			case PAIR:
+				err := in.Method(action, "pow")
+				if err {
+					return err
+				}
 			}
 		case "func":
 			name := string(actions[focus].Variables[0])
@@ -3440,10 +3489,30 @@ func (in *Interpreter) Run(node_name string) bool {
 					switch fn.Name {
 					case "print", "out":
 						for n, v := range action.Variables {
-							fmt.Print(in.Stringify(in.GetAny(string(v))))
-							if n != len(action.Variables)-1 {
-								fmt.Print(" ")
+							if in.Type(string(v)) == PAIR { // if pair
+								pair := in.NamedPair(string(v))
+								_, ok := pair.Ids[PairKey(in, "view")]
+								if ok { // if has view field
+									err := in.Method(action, "view")
+									if err {
+										return err
+									}
+									str := in.GetAny(action.Target)
+									fmt.Print(in.Stringify(str))
+
+								} else {
+									fmt.Print(in.Stringify(pair))
+								}
+								if n != len(action.Variables)-1 {
+									fmt.Print(" ")
+								}
+							} else { // any type other than pair
+								fmt.Print(in.Stringify(in.GetAny(string(v))))
+								if n != len(action.Variables)-1 {
+									fmt.Print(" ")
+								}
 							}
+
 						}
 						if fn.Name == "print" {
 							fmt.Println()
@@ -4315,7 +4384,7 @@ func (in *Interpreter) Run(node_name string) bool {
 							exe, _ := os.Executable()
 							in.Save(action.Target, exe)
 						case "version":
-							in.Save(action.Target, "4.3.9")
+							in.Save(action.Target, "4.4.0")
 						case "args":
 							l := bytecode.List{}
 							for _, arg := range os.Args {
@@ -4847,6 +4916,88 @@ func (in *Interpreter) DeepAssign(receiver any, item any, inds []any) error {
 		return fmt.Errorf("unsupported assignment target: %s", types[TypeToByte(rec)])
 	}
 	return nil
+}
+
+func (in *Interpreter) Method(action bytecode.Action, method string) bool {
+	if err := in.CheckDtype(action, 0, PAIR); err {
+		return err
+	}
+	object := in.NamedPair(action.First())
+	ind := PairKey(in, method)
+	if _, ok := object.Ids[ind]; !ok {
+		in.Error(action, fmt.Sprintf("invalid pairing key: %s", strings.SplitN(ind, ":", 2)[1]), "index")
+		return true
+	}
+	ref, ok0 := object.Ids[ind]
+	if !ok0 {
+		in.Error(action, "no method: "+method, "method")
+		return true
+	}
+	fnany := in.GetAnyRef(ref)
+	var fn *bytecode.Function
+	if fn, ok0 = fnany.(*bytecode.Function); !ok0 {
+		in.Error(action, "method "+method+" must be of type func, not "+bytecode.TypeStr(in.TypeRef(ref)), "method")
+		return true
+	} else {
+		// user functions start
+		f_in := Interpreter{V: &Vars{
+			Names: make(map[string]int),
+		}}
+		f_in.Id = rand.Uint64()
+		GInt.Register(&f_in)
+		f_in.Copy(in)
+		for n, fn_arg := range fn.Vars {
+			if n == len(fn.Vars)-1 && len(action.Variables) > len(fn.Vars) {
+				last := bytecode.List{}
+				for _, lastlet := range action.Variables[len(fn.Vars)-1:] {
+					ListAppend(&last, &f_in, in.GetAny(string(lastlet)))
+				}
+				f_in.Save(string(fn_arg), last)
+				continue
+			}
+			fn_arg_str := string(fn_arg)
+			if in.Type(string(action.Variables[n])) == PAIR {
+				p := f_in.CopyPair(string(action.Variables[n]), in)
+				f_in.Save(fn_arg_str, p)
+			} else if in.Type(string(action.Variables[n])) == LIST {
+				l := f_in.CopyList(string(action.Variables[n]), in)
+				f_in.Save(fn_arg_str, l)
+			} else if in.Type(string(action.Variables[n])) == ID {
+				id := in.NamedId(string(action.Variables[n]))
+				f_in.Save(fn_arg_str, id)
+			} else if in.Type(string(action.Variables[n])) == SPAN {
+				s := f_in.CopySpan(string(action.Variables[n]), in)
+				f_in.Save(fn_arg_str, s)
+			} else {
+				f_in.Save(fn_arg_str, in.GetAny(string(action.Variables[n])))
+			}
+		}
+		err := f_in.Run(fn.Node)
+		in.ErrSource = f_in.ErrSource
+		if err {
+			return err
+		}
+		_, ok := f_in.V.Names["_return_"]
+		if !ok || f_in.V.Names["_return_"] >= len(f_in.V.Slots) {
+			f_in.Nothing("_return_")
+		} else {
+			if f_in.V.Slots[f_in.V.Names["_return_"]].Type == LIST {
+				l := in.CopyList("_return_", &f_in)
+				in.Save(action.Target, l)
+			} else if f_in.V.Slots[f_in.V.Names["_return_"]].Type == PAIR {
+				l := in.CopyPair("_return_", &f_in)
+				in.Save(action.Target, l)
+			} else if f_in.V.Slots[f_in.V.Names["_return_"]].Type == SPAN {
+				l := in.CopySpan("_return_", &f_in)
+				in.Save(action.Target, l)
+			} else {
+				in.Save(action.Target, f_in.GetAny("_return_"))
+			}
+		}
+		f_in.Destroy()
+		// user functions end
+	}
+	return false
 }
 
 func chunkBy[T any](items []T, chunkSize int) (chunks [][]T) {
@@ -5467,11 +5618,14 @@ func ServerHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if ServerInterpreter == nil {
-		ServerInterpreter = &Interpreter{
-			V:    &Vars{Names: make(map[string]int)},
-			Id:   rand.Uint64(),
-			Code: make(map[string][]bytecode.Action),
-		}
+		/*
+			ServerInterpreter = &Interpreter{
+				V:    &Vars{Names: make(map[string]int)},
+				Id:   rand.Uint64(),
+				Code: make(map[string][]bytecode.Action),
+			}
+		*/
+		ServerInterpreter := NewInterpreterPtr("len = len", ".")
 		GInt.Register(ServerInterpreter)
 	}
 
