@@ -403,6 +403,57 @@ func oop(tokens []Token) []Token {
 	return tokens
 }
 
+var spanLiteralTypes = map[string]bool{
+	"noth": true, "int": true, "float": true, "byte": true, "str": true,
+	"func": true, "span": true, "id": true, "list": true, "bool": true,
+	"pair": true, "arr": true,
+}
+
+// span_literal_modifier rewrites typed span syntax before the OOP modifier can
+// interpret the dot as member access. Parentheses make nested literals ordinary
+// expressions, e.g. span.[int.[1], int.[2]].
+func span_literal_modifier(tokens []Token) []Token {
+	for i := 0; i+2 < len(tokens); i++ {
+		if tokens[i].Type != "WORD" || !spanLiteralTypes[tokens[i].Value] ||
+			tokens[i+1].Type != "DOT" || tokens[i+2].Type != "O_BR" {
+			continue
+		}
+
+		level, end := 0, -1
+		for n := i + 2; n < len(tokens); n++ {
+			switch tokens[n].Type {
+			case "O_BR":
+				level++
+			case "C_BR":
+				level--
+				if level == 0 {
+					end = n
+				}
+			}
+			if end >= 0 {
+				break
+			}
+		}
+		if end < 0 {
+			continue
+		}
+
+		body := span_literal_modifier(Unlink(tokens[i+3 : end]))
+		replacement := []Token{
+			{"O_PAR", ""}, {"ACT", ""}, {"WORD", "span_literal"},
+			{"CONST", "\"" + tokens[i].Value + "\""},
+		}
+		if len(body) > 0 {
+			replacement = append(replacement, Token{"COMM", ""})
+			replacement = append(replacement, body...)
+		}
+		replacement = append(replacement, Token{"C_PAR", ""})
+		tokens = append(append(Unlink(tokens[:i]), replacement...), Unlink(tokens[end+1:])...)
+		i += len(replacement) - 1
+	}
+	return Unlink(tokens)
+}
+
 func Tokenize(sourcestr string) []Token {
 	reg_const := regexp.MustCompile(`^(true|false|(-?[0-9]+\.[0-9]+)|(-?[0-9]+)|(b\.[0-9]+)|".*")$`)
 	constants := map[string]string{"$": "DOLL", ",": "COMM", ".": "DOT", "'": "SUB", " or ": "OR", " and ": "AND", "not ": "NOT", ":": "COL", "}": "C_CUR", "{": "O_CUR", "]": "C_BR", "[": "O_BR", ")": "C_PAR", "(": "O_PAR", "!": "ACT", "++": "PP", "--": "MM", "+": "PLUS", "->": "R_ARR", "-": "MINUS", "*": "MUL", "//": "DDIV", "/": "DIV", "^": "POW", "%": "MOD", "<": "LESS", ">": "GREAT", "==": "ISEQ", "!=": "NISEQ", "<-": "L_ARR", "&=": "PEQ", "=": "EQ", "...": "TDOT"}
@@ -461,6 +512,7 @@ func Tokenize(sourcestr string) []Token {
 	}
 	output = unary(output)
 	output = DotConst(output)
+	output = span_literal_modifier(output)
 	output = oop2(output)
 	return output
 }
@@ -1590,7 +1642,7 @@ type CallReply struct {
 // rpc END
 
 func GenerateFuns() []Function {
-	strs := []string{"print", "out", "where", "len", "stats", "except", "sleep", "read", "write", "remove", "isdir", "mkdir", "abs", "lower", "upper", "map", "jsonp", "check_type", "exit", "type", "convert", "list", "span", "array", "pair", "append", "system", "keys", "source", "library", "run", "runf", "sort", "id", "ternary", "rand", "input", "glob", "global", "sync", "env", "range", "fmt", "chdir", "split", "join", "cp", "mv", "rm", "pop", "itc", "cti", "has", "index", "replace", "re_match", "re_find", "rget", "rpost", "arrm", "value", "sub", "html_set_inner"}
+	strs := []string{"print", "out", "where", "len", "stats", "except", "sleep", "read", "write", "remove", "isdir", "mkdir", "abs", "lower", "upper", "map", "jsonp", "check_type", "exit", "type", "convert", "list", "span", "span_literal", "array", "pair", "append", "system", "keys", "source", "library", "run", "runf", "sort", "id", "ternary", "rand", "input", "glob", "global", "sync", "env", "range", "fmt", "chdir", "split", "join", "cp", "mv", "rm", "pop", "itc", "cti", "has", "index", "replace", "re_match", "re_find", "rget", "rpost", "arrm", "value", "sub", "html_set_inner"}
 	fs := []Function{}
 	for _, str := range strs {
 		fs = append(fs, Function{Name: str})

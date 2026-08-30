@@ -1114,6 +1114,29 @@ func (in *Interpreter) GCE() {
 						newVars.Ids = append(newVars.Ids, nil)
 					}
 				}
+			case FUNC:
+				newSpan.Start = uint64(len(newVars.Funcs))
+				newVars.Funcs = append(newVars.Funcs, old.Funcs[val.Start:val.Start+val.Length]...)
+			case ARR:
+				newSpan.Start = uint64(len(newVars.Arrs))
+				newVars.Arrs = append(newVars.Arrs, old.Arrs[val.Start:val.Start+val.Length]...)
+			case LIST:
+				newSpan.Start = uint64(len(newVars.Lists))
+				for i := uint64(0); i < val.Length; i++ {
+					copyEntry(Entry{Type: LIST, Index: int(val.Start + i)})
+				}
+			case PAIR:
+				newSpan.Start = uint64(len(newVars.Pairs))
+				for i := uint64(0); i < val.Length; i++ {
+					copyEntry(Entry{Type: PAIR, Index: int(val.Start + i)})
+				}
+			case SPAN:
+				newSpan.Start = uint64(len(newVars.Spans))
+				for i := uint64(0); i < val.Length; i++ {
+					copyEntry(Entry{Type: SPAN, Index: int(val.Start + i)})
+				}
+			case NOTH:
+				newSpan.Start = 0
 			default:
 				// If unknown dtype, just leave span with zero start (safe fallback)
 				newSpan.Start = 0
@@ -1679,7 +1702,7 @@ func (in *Interpreter) CopySpan(source_name string, og *Interpreter) bytecode.Sp
 
 func (in *Interpreter) NewSpan(length int, dtype byte) bytecode.Span {
 	if length == 0 {
-		return bytecode.Span{}
+		return bytecode.Span{Dtype: dtype}
 	} else {
 		s := bytecode.Span{}
 		s.Dtype = dtype
@@ -1708,12 +1731,24 @@ func (in *Interpreter) NewSpan(length int, dtype byte) bytecode.Span {
 			for range length {
 				in.V.Bytes = append(in.V.Bytes, byte(0))
 			}
+		case STR:
+			s.Start = uint64(len(in.V.Strs))
+			s.Length = uint64(length)
+			in.V.Strs = append(in.V.Strs, make([]string, length)...)
 		case FUNC:
 			s.Start = uint64(len(in.V.Funcs))
 			s.Length = uint64(length)
 			for range length {
 				in.V.Funcs = append(in.V.Funcs, &bytecode.Function{})
 			}
+		case ID:
+			s.Start = uint64(len(in.V.Ids))
+			s.Length = uint64(length)
+			in.V.Ids = append(in.V.Ids, make([]*bytecode.MinPtr, length)...)
+		case ARR:
+			s.Start = uint64(len(in.V.Arrs))
+			s.Length = uint64(length)
+			in.V.Arrs = append(in.V.Arrs, make([]bytecode.Array, length)...)
 		case LIST:
 			s.Start = uint64(len(in.V.Lists))
 			s.Length = uint64(length)
@@ -1735,7 +1770,7 @@ func (in *Interpreter) NewSpan(length int, dtype byte) bytecode.Span {
 			}
 		case NOTH:
 			s.Start = uint64(0)
-			s.Length = uint64(0)
+			s.Length = uint64(length)
 		default:
 			panic("unsupported Span content")
 		}
@@ -1752,6 +1787,10 @@ func (in *Interpreter) SpanSet(s *bytecode.Span, index int, item any) error {
 		return fmt.Errorf("impossible span index: %d", index)
 	}
 	switch v := item.(type) {
+	case nil:
+		if s.Dtype != NOTH {
+			return fmt.Errorf("cannot append item with type code %s to span with type code %s!", types[NOTH], types[s.Dtype])
+		}
 	case *big.Int:
 		if s.Dtype == INT {
 			in.V.Ints[s.Start+uint64(index)].Set(v)
@@ -1769,6 +1808,12 @@ func (in *Interpreter) SpanSet(s *bytecode.Span, index int, item any) error {
 			in.V.Bytes[s.Start+uint64(index)] = v
 		} else {
 			return fmt.Errorf("cannot append item with type code %s to span with type code %s!", types[BYTE], types[s.Dtype])
+		}
+	case string:
+		if s.Dtype == STR {
+			in.V.Strs[s.Start+uint64(index)] = v
+		} else {
+			return fmt.Errorf("cannot append item with type code %s to span with type code %s!", types[STR], types[s.Dtype])
 		}
 	case bool:
 		if s.Dtype == BOOL {
@@ -1800,15 +1845,90 @@ func (in *Interpreter) SpanSet(s *bytecode.Span, index int, item any) error {
 		} else {
 			return fmt.Errorf("cannot append item with type code %s to span with type code %s!", types[FUNC], types[s.Dtype])
 		}
+	case *bytecode.MinPtr:
+		if s.Dtype == ID {
+			in.V.Ids[s.Start+uint64(index)] = v
+		} else {
+			return fmt.Errorf("cannot append item with type code %s to span with type code %s!", types[ID], types[s.Dtype])
+		}
+	case bytecode.Array:
+		if s.Dtype == ARR {
+			in.V.Arrs[s.Start+uint64(index)] = v
+		} else {
+			return fmt.Errorf("cannot append item with type code %s to span with type code %s!", types[ARR], types[s.Dtype])
+		}
 	default:
 		return fmt.Errorf("unsupported type!")
 	}
 	return nil
 }
 
+func (in *Interpreter) spanLiteral(action bytecode.Action) bool {
+	if in.CheckArgN(action, 1, int(^uint(0)>>1)) || in.CheckDtype(action, 0, STR) {
+		return true
+	}
+	types := map[string]byte{
+		"noth": NOTH, "int": INT, "float": FLOAT, "byte": BYTE, "str": STR,
+		"func": FUNC, "span": SPAN, "id": ID, "list": LIST, "bool": BOOL,
+		"pair": PAIR, "arr": ARR,
+	}
+	typeName := in.NamedStr(action.First())
+	dtype, ok := types[typeName]
+	if !ok {
+		in.Error(action, "unsupported span literal type: "+typeName, "arg_type")
+		return true
+	}
+
+	span := in.NewSpan(len(action.Variables)-1, dtype)
+	for index, variable := range action.Variables[1:] {
+		name := string(variable)
+		value := in.GetAny(name)
+		actual := in.Type(name)
+
+		// Numeric literals use the explicit prefix as their conversion target.
+		switch dtype {
+		case BYTE:
+			switch actual {
+			case INT:
+				i := in.NamedInt(name)
+				if !i.IsUint64() || i.Uint64() > 255 {
+					in.Error(action, fmt.Sprintf("span literal element %d cannot be converted to byte", index), "arg_type")
+					return true
+				}
+				value = byte(i.Uint64())
+			case FLOAT:
+				i, accuracy := in.NamedFloat(name).Int64()
+				if accuracy != big.Exact || i < 0 || i > 255 {
+					in.Error(action, fmt.Sprintf("span literal element %d cannot be converted to byte", index), "arg_type")
+					return true
+				}
+				value = byte(i)
+			}
+		case INT:
+			if actual == BYTE {
+				value = big.NewInt(int64(in.NamedByte(name)))
+			}
+		case FLOAT:
+			switch actual {
+			case INT:
+				value = new(big.Float).SetInt(in.NamedInt(name))
+			case BYTE:
+				value = big.NewFloat(float64(in.NamedByte(name)))
+			}
+		}
+
+		if err := in.SpanSet(&span, index, value); err != nil {
+			in.Error(action, fmt.Sprintf("span literal element %d: %v", index, err), "arg_type")
+			return true
+		}
+	}
+	in.Save(action.Target, span)
+	return false
+}
+
 func (in *Interpreter) StringSpan(l bytecode.Span) string {
 	elements := []string{}
-	dstrings := map[byte]string{0: "noth", 1: "int", 2: "float", 3: "str", 4: "arr", 5: "list", 6: "pair", 7: "bool", 8: "byte", 9: "func", 10: "id", 11: "arrm"}
+	dstrings := map[byte]string{0: "noth", 1: "int", 2: "float", 3: "str", 4: "arr", 5: "list", 6: "pair", 7: "bool", 8: "byte", 9: "func", 10: "id", 11: "span"}
 	for item := l.Start; item < l.Start+l.Length; item++ {
 		switch l.Dtype {
 		case INT:
@@ -1829,6 +1949,12 @@ func (in *Interpreter) StringSpan(l bytecode.Span) string {
 		case PAIR:
 			pp := in.V.Pairs[item]
 			elements = append(elements, PairString(&pp, in))
+		case SPAN:
+			elements = append(elements, in.StringSpan(in.V.Spans[item]))
+		case ARR:
+			elements = append(elements, in.V.Arrs[item].String())
+		case ID:
+			elements = append(elements, fmt.Sprintf("id.%v", in.V.Ids[item]))
 		default:
 			elements = append(elements, "Nothing")
 		}
@@ -2461,6 +2587,12 @@ func (in *Interpreter) Run(node_name string) bool {
 				case ID:
 					copy(in.V.Ids[newSpan.Start:newSpan.Start+s0.Length], in.V.Ids[s0.Start:s0.Start+s0.Length])
 					copy(in.V.Ids[newSpan.Start+s0.Length:newSpan.Start+s0.Length+s1.Length], in.V.Ids[s1.Start:s1.Start+s1.Length])
+				case SPAN:
+					copy(in.V.Spans[newSpan.Start:newSpan.Start+s0.Length], in.V.Spans[s0.Start:s0.Start+s0.Length])
+					copy(in.V.Spans[newSpan.Start+s0.Length:newSpan.Start+s0.Length+s1.Length], in.V.Spans[s1.Start:s1.Start+s1.Length])
+				case ARR:
+					copy(in.V.Arrs[newSpan.Start:newSpan.Start+s0.Length], in.V.Arrs[s0.Start:s0.Start+s0.Length])
+					copy(in.V.Arrs[newSpan.Start+s0.Length:newSpan.Start+s0.Length+s1.Length], in.V.Arrs[s1.Start:s1.Start+s1.Length])
 				}
 
 				in.Save(action.Target, newSpan)
@@ -2473,6 +2605,15 @@ func (in *Interpreter) Run(node_name string) bool {
 				}
 			}
 		case ".":
+			if t := in.Type(action.First()); t != NOTH {
+				if t != PAIR {
+					in.Error(action, "object opeartor cannot be applied to "+bytecode.TypeStr(t)+" (variable\""+action.First()+"\")", "type")
+					return true
+				}
+			} else {
+				in.Error(action, "Undeclared variable: "+action.First(), "undeclared")
+				return true
+			}
 			p := in.NamedPair(string(action.Variables[0]))
 			ind := PairKey(in, string(action.Variables[1]))
 			if _, ok := p.Ids[ind]; !ok {
@@ -3376,6 +3517,16 @@ func (in *Interpreter) Run(node_name string) bool {
 			}
 			in.Error(action, in.NamedStr(action.First()), in.NamedStr(action.Second()))
 			return true
+		case "chdir":
+			e := in.CheckArgN(action, 1, 1)
+			if e {
+				return e
+			}
+			e = in.CheckDtype(action, 0, STR)
+			if e {
+				return e
+			}
+			os.Chdir(in.NamedStr(action.First()))
 		case "$":
 			text_command := strings.TrimSpace(strings.SplitN(action.Source.Source, "$", 2)[1])
 			// Apply fmt-style interpolation to the command
@@ -3405,7 +3556,7 @@ func (in *Interpreter) Run(node_name string) bool {
 			// Use OS-specific shell for command execution
 			var cmd *exec.Cmd
 			if runtime.GOOS == "windows" {
-				cmd = exec.Command("cmd.exe", "/c", text_command)
+				cmd = exec.Command("powershell", "-c", text_command)
 			} else {
 				cmd = exec.Command("sh", "-c", text_command)
 			}
@@ -4100,6 +4251,10 @@ func (in *Interpreter) Run(node_name string) bool {
 							}
 						}
 						in.Save(action.Target, s)
+					case "span_literal":
+						if in.spanLiteral(action) {
+							return true
+						}
 					case "rand":
 						err := in.CheckArgN(action, 2, 2)
 						if err {
