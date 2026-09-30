@@ -132,7 +132,7 @@ class GUI(Tk):
         self.cancelled = []
         self.his_focus = 0
         self.wid = 1# t_lines width
-        font = ("Courier", 14)
+        font = ("Courier New", 14)
         self.title("Miniscule Minimum Editor")
         self.t_lines = Text(self, autoseparators=True, undo = True, relief = FLAT, width = self.wid, font = font)
         self.t_editor = Text(self, autoseparators=True, undo = True, relief = FLAT, font = font, wrap = NONE)
