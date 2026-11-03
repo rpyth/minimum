@@ -175,10 +175,12 @@ class GUI(Tk):
         
         self.indent = 4
         self.fname = ""
-        self.pfuns = ["mark","proc","print","out","prec","return","sleep", "env", "except","quit"]
-        self.funs = ["sort","format", "join", "len", "list", "append", "pop", "convert", "sub", "type", "system", "input", "has", "range", "index", "run", "read", "write", "array", "itc", "cti", "rand", "checkpoint", "help", "exec", "pair", "keys", "ternary", "id", "value"]
+        # pfuns = passthrough functions (return Nothing / no value); funs = functions that return a value
+        # real function set taken from GenerateFuns (bytecode.go) limited to names with an actual case in inter.go
+        self.pfuns = ["check_type","chdir","except","exit","global","html_set_inner","library","mkdir","out","print","remove","run","sleep","source","sync","write"]
+        self.funs = ["abs","append","convert","cti","env","fmt","glob","has","id","input","isdir","itc","join","jsonp","keys","len","lower","map","pair","rand","range","read","replace","rget","rpost","runf","sort","span","span_literal","split","stats","sub","system","ternary","type","upper","value","where"]
         #self.funs = [f"{f} " for f in self.funs]
-        self.synt = ["or","not","and","true","false","if", "while", "pool", "<-", "->", "set", "for", "else", "func", "--", "source", "library", "error", "switch", "case", "process", "global", "repeat"]
+        self.synt = ["or","not","and","true","false","if", "while", "pool", "<-", "->", "set", "for", "else", "func", "--", "return", "error", "switch", "case", "process", "repeat"]
         self.exts = [("Minimum file","*.min"),("Plain text file","*.txt"),("Other","*.*")]
         self.t_editor.tag_config("funs", foreground = "#00D413")
         self.t_editor.tag_config("pfuns", foreground = "#C48A00")
