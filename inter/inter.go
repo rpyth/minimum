@@ -19,6 +19,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"runtime"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -3962,6 +3963,32 @@ func (in *Interpreter) Run(node_name string) bool {
 							in.Error(action, go_err.Error(), "sys")
 							return true
 						}
+					case "serialize":
+						err := in.CheckArgN(action, 1, 1)
+						if err {
+							return true
+						}
+						obj, serr := in.SerializeName(action.First())
+						if serr != nil {
+							in.Error(action, serr.Error(), "sys")
+							return true
+						}
+						in.Save(action.Target, obj)
+					case "deserialize":
+						err := in.CheckArgN(action, 1, 1)
+						if err {
+							return true
+						}
+						err = in.CheckDtype(action, 0, SPAN)
+						if err {
+							return true
+						}
+						obj, serr := in.Deserialize(in.NamedSpan(action.First()))
+						if serr != nil {
+							in.Error(action, serr.Error(), "sys")
+							return true
+						}
+						in.Save(action.Target, obj)
 					case "convert":
 						err := in.CheckArgN(action, 2, 2)
 						if err {
@@ -4539,7 +4566,7 @@ func (in *Interpreter) Run(node_name string) bool {
 							exe, _ := os.Executable()
 							in.Save(action.Target, exe)
 						case "version":
-							in.Save(action.Target, "4.4.0")
+							in.Save(action.Target, "4.4.1")
 						case "args":
 							l := bytecode.List{}
 							for _, arg := range os.Args {
@@ -6035,3 +6062,496 @@ func CloseAllRpc() {
 }
 
 // rpc END
+
+// SERIALIZE / DESERIALIZE START
+//
+// Serialize encodes any supported Minimum value into a self-contained byte
+// payload, stores it inside the same interpreter as a byte-typed span, and
+// returns that span. Deserialize reads such a span back and rebuilds the
+// Minimum value. ARR is not supported: it is deprecated in favor of SPAN,
+// so any arr value is rejected with a clear error.
+//
+// Wire format: every value is a block of [type byte][payload]:
+//   noth  (0):  empty payload
+//   int   (1):  length-prefixed decimal string
+//   float (2):  length-prefixed round-trip text of big.Float
+//   str   (3):  length-prefixed utf-8 bytes
+//   arr   (4):  deprecated, rejected
+//   list  (5):  element count + serialized element blocks
+//   pair  (6):  entry count + (length-prefixed key + value block) per entry
+//   bool  (7):  1 byte
+//   byte  (8):  1 byte
+//   func  (9):  length-prefixed name, target, node + var count + vars
+//   id   (10):  8-byte big-endian Addr + 8-byte big-endian Id
+//   span (11):  dtype byte + element count + element blocks
+// Lengths are base-128 varints; strings are length-prefixed.
+
+func putUvarint(out []byte, n uint64) []byte {
+	for n >= 0x80 {
+		out = append(out, byte(n)|0x80)
+		n >>= 7
+	}
+	return append(out, byte(n))
+}
+
+func readUvarint(data []byte, pos *int) (uint64, error) {
+	var n uint64
+	var shift uint
+	for {
+		if *pos >= len(data) {
+			return 0, fmt.Errorf("unexpected end of serialized data")
+		}
+		b := data[*pos]
+		*pos++
+		n |= uint64(b&0x7f) << shift
+		if b < 0x80 {
+			return n, nil
+		}
+		shift += 7
+		if shift > 63 {
+			return 0, fmt.Errorf("serialized length overflow")
+		}
+	}
+}
+
+func putStr(out []byte, s string) []byte {
+	out = putUvarint(out, uint64(len(s)))
+	return append(out, s...)
+}
+
+func readStr(data []byte, pos *int) (string, error) {
+	n, err := readUvarint(data, pos)
+	if err != nil {
+		return "", err
+	}
+	if n > uint64(len(data)-*pos) {
+		return "", fmt.Errorf("serialized item length %d runs past the end of the data", n)
+	}
+	end := *pos + int(n)
+	s := string(data[*pos:end])
+	*pos = end
+	return s, nil
+}
+
+func putU64(out []byte, n uint64) []byte {
+	return append(out, byte(n>>56), byte(n>>48), byte(n>>40), byte(n>>32),
+		byte(n>>24), byte(n>>16), byte(n>>8), byte(n))
+}
+
+func readU64(data []byte, pos *int) (uint64, error) {
+	if *pos+8 > len(data) {
+		return 0, fmt.Errorf("unexpected end of serialized data")
+	}
+	n := uint64(data[*pos])<<56 | uint64(data[*pos+1])<<48 | uint64(data[*pos+2])<<40 |
+		uint64(data[*pos+3])<<32 | uint64(data[*pos+4])<<24 | uint64(data[*pos+5])<<16 |
+		uint64(data[*pos+6])<<8 | uint64(data[*pos+7])
+	*pos += 8
+	return n, nil
+}
+
+// resolveRef follows a MinPtr to the owning interpreter through the parent
+// chain and returns the value it points at.
+func (in *Interpreter) resolveRef(ref *bytecode.MinPtr) any {
+	owner := in
+	for owner != nil && owner.Id != ref.Id {
+		owner = owner.Parent
+	}
+	if owner == nil || ref.Addr >= uint64(len(owner.V.Slots)) {
+		return bytecode.Nothing{}
+	}
+	slot := owner.V.Slots[ref.Addr]
+	switch slot.Type {
+	case INT:
+		return owner.V.Ints[slot.Index]
+	case FLOAT:
+		return owner.V.Floats[slot.Index]
+	case STR:
+		return owner.V.Strs[slot.Index]
+	case BOOL:
+		return owner.V.Bools[slot.Index]
+	case BYTE:
+		return owner.V.Bytes[slot.Index]
+	case LIST:
+		return owner.V.Lists[slot.Index]
+	case PAIR:
+		return owner.V.Pairs[slot.Index]
+	case SPAN:
+		return owner.V.Spans[slot.Index]
+	case ID:
+		return owner.V.Ids[slot.Index]
+	case FUNC:
+		return owner.V.Funcs[slot.Index]
+	case ARR:
+		return bytecode.Array{}
+	}
+	return bytecode.Nothing{}
+}
+
+// spanItem reads one element of a span living in the given interpreter.
+func spanItem(data_in *Interpreter, s bytecode.Span, i uint64) (any, error) {
+	pos := s.Start + i
+	switch s.Dtype {
+	case INT:
+		if pos >= uint64(len(data_in.V.Ints)) {
+			return nil, fmt.Errorf("span index %d out of interpreter memory", pos)
+		}
+		return data_in.V.Ints[pos], nil
+	case FLOAT:
+		if pos >= uint64(len(data_in.V.Floats)) {
+			return nil, fmt.Errorf("span index %d out of interpreter memory", pos)
+		}
+		return data_in.V.Floats[pos], nil
+	case STR:
+		if pos >= uint64(len(data_in.V.Strs)) {
+			return nil, fmt.Errorf("span index %d out of interpreter memory", pos)
+		}
+		return data_in.V.Strs[pos], nil
+	case BOOL:
+		if pos >= uint64(len(data_in.V.Bools)) {
+			return nil, fmt.Errorf("span index %d out of interpreter memory", pos)
+		}
+		return data_in.V.Bools[pos], nil
+	case BYTE:
+		if pos >= uint64(len(data_in.V.Bytes)) {
+			return nil, fmt.Errorf("span index %d out of interpreter memory", pos)
+		}
+		return data_in.V.Bytes[pos], nil
+	case LIST:
+		if pos >= uint64(len(data_in.V.Lists)) {
+			return nil, fmt.Errorf("span index %d out of interpreter memory", pos)
+		}
+		return data_in.V.Lists[pos], nil
+	case PAIR:
+		if pos >= uint64(len(data_in.V.Pairs)) {
+			return nil, fmt.Errorf("span index %d out of interpreter memory", pos)
+		}
+		return data_in.V.Pairs[pos], nil
+	case SPAN:
+		if pos >= uint64(len(data_in.V.Spans)) {
+			return nil, fmt.Errorf("span index %d out of interpreter memory", pos)
+		}
+		return data_in.V.Spans[pos], nil
+	case ID:
+		if pos >= uint64(len(data_in.V.Ids)) {
+			return nil, fmt.Errorf("span index %d out of interpreter memory", pos)
+		}
+		return data_in.V.Ids[pos], nil
+	case FUNC:
+		if pos >= uint64(len(data_in.V.Funcs)) {
+			return nil, fmt.Errorf("span index %d out of interpreter memory", pos)
+		}
+		return data_in.V.Funcs[pos], nil
+	case NOTH:
+		return bytecode.Nothing{}, nil
+	case ARR:
+		return nil, fmt.Errorf("arr is deprecated in favor of span")
+	}
+	return nil, fmt.Errorf("unsupported span dtype %d", s.Dtype)
+}
+
+// nameOwner finds the interpreter that defines the variable name, walking
+// up the parent chain like the Named* getters do.
+func (in *Interpreter) nameOwner(name string) *Interpreter {
+	for i := in; i != nil; i = i.Parent {
+		if _, ok := i.V.Names[name]; ok {
+			return i
+		}
+	}
+	return in
+}
+
+// serializeAny appends the encoding of v to out. data_in is the interpreter
+// that owns span data referenced by v.
+func (in *Interpreter) serializeAny(v any, data_in *Interpreter, out []byte) ([]byte, error) {
+	switch val := v.(type) {
+	case *big.Int:
+		out = append(out, INT)
+		out = putStr(out, val.String())
+	case *big.Float:
+		out = append(out, FLOAT)
+		out = putStr(out, val.Text('g', -1))
+	case string:
+		out = append(out, STR)
+		out = putStr(out, val)
+	case bool:
+		out = append(out, BOOL)
+		out = append(out, ternary(val, byte(1), byte(0)))
+	case byte:
+		out = append(out, BYTE)
+		out = append(out, val)
+	case *bytecode.MinPtr:
+		out = append(out, ID)
+		out = putU64(out, val.Addr)
+		out = putU64(out, val.Id)
+	case *bytecode.Function:
+		out = append(out, FUNC)
+		out = putStr(out, val.Name)
+		out = putStr(out, val.Target)
+		out = putStr(out, val.Node)
+		out = putUvarint(out, uint64(len(val.Vars)))
+		for _, vr := range val.Vars {
+			out = putStr(out, string(vr))
+		}
+	case bytecode.List:
+		out = append(out, LIST)
+		out = putUvarint(out, uint64(len(val.Ids)))
+		for _, ref := range val.Ids {
+			var err error
+			out, err = in.serializeAny(in.resolveRef(ref), data_in, out)
+			if err != nil {
+				return nil, err
+			}
+		}
+	case bytecode.Pair:
+		out = append(out, PAIR)
+		keys := make([]string, 0, len(val.Ids))
+		for key := range val.Ids {
+			keys = append(keys, key)
+		}
+		sort.Strings(keys)
+		out = putUvarint(out, uint64(len(keys)))
+		for _, key := range keys {
+			out = putStr(out, key)
+			var err error
+			out, err = in.serializeAny(in.resolveRef(val.Ids[key]), data_in, out)
+			if err != nil {
+				return nil, err
+			}
+		}
+	case bytecode.Span:
+		out = append(out, SPAN)
+		out = append(out, val.Dtype)
+		out = putUvarint(out, val.Length)
+		for i := uint64(0); i < val.Length; i++ {
+			item, err := spanItem(data_in, val, i)
+			if err != nil {
+				return nil, err
+			}
+			out, err = in.serializeAny(item, data_in, out)
+			if err != nil {
+				return nil, err
+			}
+		}
+	case bytecode.Array:
+		return nil, fmt.Errorf("arr is deprecated in favor of span")
+	case bytecode.Nothing, int16, nil:
+		out = append(out, NOTH)
+	default:
+		return nil, fmt.Errorf("cannot serialize value of type %T", v)
+	}
+	return out, nil
+}
+
+// Serialize stores the contents of any supported Minimum value as a
+// byte-typed span in the interpreter and returns that span. ARR is rejected
+// as deprecated.
+func (in *Interpreter) Serialize(v any) (bytecode.Span, error) {
+	return in.SerializeIn(v, in)
+}
+
+// SerializeIn serializes v, reading span data from the interpreter that owns
+// it (data_in).
+func (in *Interpreter) SerializeIn(v any, data_in *Interpreter) (bytecode.Span, error) {
+	payload, err := in.serializeAny(v, data_in, []byte{})
+	if err != nil {
+		return bytecode.Span{}, err
+	}
+	span := in.NewSpan(len(payload), BYTE)
+	copy(in.V.Bytes[span.Start:span.Start+span.Length], payload)
+	return span, nil
+}
+
+// SerializeName serializes the value of the variable named name. If the name
+// resolves to a parent interpreter, its span data is read from that owner.
+func (in *Interpreter) SerializeName(name string) (bytecode.Span, error) {
+	return in.SerializeIn(in.GetAny(name), in.nameOwner(name))
+}
+
+// deserializeAny decodes one value block from data at pos and rebuilds it in
+// in; container values (list, pair, span) are allocated into the interpreter.
+func (in *Interpreter) deserializeAny(data []byte, pos *int) (any, error) {
+	if *pos >= len(data) {
+		return nil, fmt.Errorf("unexpected end of serialized data")
+	}
+	dtype := data[*pos]
+	*pos++
+	switch dtype {
+	case NOTH:
+		return bytecode.Nothing{}, nil
+	case INT:
+		s, err := readStr(data, pos)
+		if err != nil {
+			return nil, err
+		}
+		i, ok := big.NewInt(0).SetString(s, 10)
+		if !ok {
+			return nil, fmt.Errorf("cannot parse serialized int: %q", s)
+		}
+		return i, nil
+	case FLOAT:
+		s, err := readStr(data, pos)
+		if err != nil {
+			return nil, err
+		}
+		f, ok := big.NewFloat(0).SetString(s)
+		if !ok {
+			return nil, fmt.Errorf("cannot parse serialized float: %q", s)
+		}
+		return f, nil
+	case STR:
+		return readStr(data, pos)
+	case BOOL:
+		if *pos >= len(data) {
+			return nil, fmt.Errorf("unexpected end of serialized data")
+		}
+		b := data[*pos]
+		*pos++
+		return b != 0, nil
+	case BYTE:
+		if *pos >= len(data) {
+			return nil, fmt.Errorf("unexpected end of serialized data")
+		}
+		b := data[*pos]
+		*pos++
+		return b, nil
+	case ID:
+		addr, err := readU64(data, pos)
+		if err != nil {
+			return nil, err
+		}
+		id, err := readU64(data, pos)
+		if err != nil {
+			return nil, err
+		}
+		return &bytecode.MinPtr{Addr: addr, Id: id}, nil
+	case FUNC:
+		name, err := readStr(data, pos)
+		if err != nil {
+			return nil, err
+		}
+		target, err := readStr(data, pos)
+		if err != nil {
+			return nil, err
+		}
+		node, err := readStr(data, pos)
+		if err != nil {
+			return nil, err
+		}
+		count, err := readUvarint(data, pos)
+		if err != nil {
+			return nil, err
+		}
+		if count > uint64(int(^uint(0)>>1)) {
+			return nil, fmt.Errorf("serialized function has too many vars")
+		}
+		vars := make([]bytecode.Variable, count)
+		for i := range vars {
+			vr, err := readStr(data, pos)
+			if err != nil {
+				return nil, err
+			}
+			vars[i] = bytecode.Variable(vr)
+		}
+		return &bytecode.Function{Name: name, Target: target, Node: node, Vars: vars}, nil
+	case LIST:
+		count, err := readUvarint(data, pos)
+		if err != nil {
+			return nil, err
+		}
+		if count > uint64(int(^uint(0)>>1)) {
+			return nil, fmt.Errorf("serialized list has too many elements")
+		}
+		l := bytecode.List{}
+		for i := uint64(0); i < count; i++ {
+			v, err := in.deserializeAny(data, pos)
+			if err != nil {
+				return nil, err
+			}
+			ListAppend(&l, in, v)
+		}
+		return l, nil
+	case PAIR:
+		count, err := readUvarint(data, pos)
+		if err != nil {
+			return nil, err
+		}
+		if count > uint64(int(^uint(0)>>1)) {
+			return nil, fmt.Errorf("serialized pair has too many entries")
+		}
+		p := bytecode.Pair{Ids: make(map[string]*bytecode.MinPtr)}
+		for i := uint64(0); i < count; i++ {
+			key, err := readStr(data, pos)
+			if err != nil {
+				return nil, err
+			}
+			v, err := in.deserializeAny(data, pos)
+			if err != nil {
+				return nil, err
+			}
+			p.Ids[key] = in.GetRef(v)
+		}
+		return p, nil
+	case SPAN:
+		if *pos >= len(data) {
+			return nil, fmt.Errorf("unexpected end of serialized data")
+		}
+		sdtype := data[*pos]
+		*pos++
+		if sdtype == ARR {
+			return nil, fmt.Errorf("arr is deprecated in favor of span")
+		}
+		length, err := readUvarint(data, pos)
+		if err != nil {
+			return nil, err
+		}
+		if length > uint64(int(^uint(0)>>1)) {
+			return nil, fmt.Errorf("serialized span is too long")
+		}
+		span := in.NewSpan(int(length), sdtype)
+		for i := uint64(0); i < length; i++ {
+			v, err := in.deserializeAny(data, pos)
+			if err != nil {
+				return nil, err
+			}
+			if sdtype == NOTH {
+				continue // nothing elements occupy no slots
+			}
+			if err := in.SpanSet(&span, int(i), v); err != nil {
+				return nil, err
+			}
+		}
+		return span, nil
+	case ARR:
+		return nil, fmt.Errorf("arr is deprecated in favor of span")
+	default:
+		return nil, fmt.Errorf("unknown serialized type code %d", dtype)
+	}
+}
+
+// Deserialize reads a byte span produced by Serialize from the same
+// interpreter and rebuilds the Minimum value from it. Container values
+// (list, pair, span) are allocated into the interpreter, scalars are
+// returned directly.
+func (in *Interpreter) Deserialize(s bytecode.Span) (any, error) {
+	if s.Dtype != BYTE {
+		return nil, fmt.Errorf("cannot deserialize: the span must contain bytes, got %s", bytecode.TypeStr(s.Dtype))
+	}
+	if s.Length == 0 {
+		return nil, fmt.Errorf("cannot deserialize: empty span")
+	}
+	if s.Start+s.Length > uint64(len(in.V.Bytes)) {
+		return nil, fmt.Errorf("span range out of interpreter memory")
+	}
+	data := in.V.Bytes[s.Start : s.Start+s.Length]
+	pos := 0
+	v, err := in.deserializeAny(data, &pos)
+	if err != nil {
+		return nil, err
+	}
+	if pos != len(data) {
+		return nil, fmt.Errorf("serialized data has %d trailing bytes", len(data)-pos)
+	}
+	return v, nil
+}
+
+// SERIALIZE / DESERIALIZE END
