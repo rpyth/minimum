@@ -456,7 +456,7 @@ func span_literal_modifier(tokens []Token) []Token {
 
 func Tokenize(sourcestr string) []Token {
 	reg_const := regexp.MustCompile(`^(true|false|(-?[0-9]+\.[0-9]+)|(-?[0-9]+)|(b\.[0-9]+)|".*")$`)
-	constants := map[string]string{"$": "DOLL", ",": "COMM", ".": "DOT", "'": "SUB", " or ": "OR", " and ": "AND", "not ": "NOT", ":": "COL", "}": "C_CUR", "{": "O_CUR", "]": "C_BR", "[": "O_BR", ")": "C_PAR", "(": "O_PAR", "!": "ACT", "++": "PP", "--": "MM", "+": "PLUS", "->": "R_ARR", "-": "MINUS", "*": "MUL", "//": "DDIV", "/": "DIV", "^": "POW", "%": "MOD", "<": "LESS", ">": "GREAT", "==": "ISEQ", "!=": "NISEQ", "<-": "L_ARR", "&=": "PEQ", "=": "EQ", "...": "TDOT"}
+	constants := map[string]string{"$": "DOLL", ",": "COMM", ".": "DOT", "'": "SUB", " or ": "OR", " and ": "AND", "not ": "NOT", ":": "COL", "}": "C_CUR", "{": "O_CUR", "]": "C_BR", "[": "O_BR", ")": "C_PAR", "(": "O_PAR", "!": "ACT", "++": "PP", "--": "MM", "+": "PLUS", "->": "R_ARR", "-": "MINUS", "*": "MUL", "//": "DDIV", "/": "DIV", "^": "POW", "%": "MOD", "<": "LESS", ">": "GREAT", "==": "ISEQ", "!=": "NISEQ", "<-": "L_ARR", "&=": "PEQ", "=": "EQ", "...": "TDOT", ";": "SCOL"}
 	focus := 0
 	output := []Token{}
 	buffer := ""
@@ -879,6 +879,21 @@ func ModifierModifier(tokens []Token, ops []string) []Token {
 	return tokens
 }
 
+func ToksSplit(tokens []Token) [][]Token {
+	result := [][]Token{{}}
+	for _, token := range tokens {
+		if token.Type == "SCOL" {
+			result = append(result, []Token{})
+		} else {
+			result[len(result)-1] = append(result[len(result)-1], token)
+		}
+	}
+	if len(result[len(result)-1]) == 0 {
+		result = result[:len(result)-1]
+	}
+	return result
+}
+
 func GetActs(tokens []Token, sl *SourceLine) []Action {
 	FixMinusPrefix(&tokens)
 	var actions []Action
@@ -886,6 +901,14 @@ func GetActs(tokens []Token, sl *SourceLine) []Action {
 	action_map := map[string]string{"DOT": ".", "SUB": "'", "AND": "and", "OR": "or", "NOT": "not", "ISEQ": "==", "NISEQ": "!=", "LESS": "<", "GREAT": ">", "PLUS": "+", "MINUS": "-", "MUL": "*", "DIV": "/", "DDIV": "//", "MOD": "%", "POW": "^"}
 	// TempN = 0 // might be unnecessary
 	tokens = ModifierModifier(tokens, ops)
+
+	if Has(tokens, Token{Type: "SCOL"}) { // in case it has semicolons, the SCOL token
+		for _, part := range ToksSplit(tokens) {
+			actlet := GetActs(part, sl)
+			actions = append(actions, actlet...)
+		}
+		return actions
+	}
 
 	// finding targets start
 	var targets []string
