@@ -2352,6 +2352,7 @@ func (in *Interpreter) Fmt(str string) string {
 				in_p.Save(name, in.GetAny(name))
 			}
 			node_name := fmt.Sprintf("_node_%d", bytecode.NodeN-1)
+			in_p.Parent = in
 			in_p.Code[node_name] = in_p.Code[node_name][:len(in_p.Code[node_name])-1]
 			in_p.Run(node_name)
 			a := in_p.GetAny(in_p.Code[node_name][len(in_p.Code[node_name])-1].Target)
@@ -2631,7 +2632,7 @@ func (in *Interpreter) Run(node_name string) bool {
 			if err {
 				return err
 			}
-			err = in.CheckDtype(action, 0, STR, LIST, PAIR)
+			err = in.CheckDtype(action, 0, STR, LIST, PAIR, SPAN)
 			if err {
 				return err
 			}
@@ -2697,6 +2698,40 @@ func (in *Interpreter) Run(node_name string) bool {
 						in.V.Names[action.Target] = int(l.Ids[ind].Addr)
 					}
 				*/
+			case SPAN:
+				sp := in.NamedSpan(action.First())
+				err = in.CheckDtype(action, 1, INT)
+				if err {
+					return err
+				}
+				ind := in.NamedInt(action.Second())
+				ind64 := ind.Int64()
+				if ind64 < 0 {
+					ind64 += int64(sp.Length)
+				}
+				switch sp.Dtype {
+				case INT:
+					in.Save(action.Target, in.V.Ints[sp.Start+uint64(ind64)])
+				case BYTE:
+					in.Save(action.Target, in.V.Bytes[sp.Start+uint64(ind64)])
+				case STR:
+					in.Save(action.Target, in.V.Strs[sp.Start+uint64(ind64)])
+				case BOOL:
+					in.Save(action.Target, in.V.Bools[sp.Start+uint64(ind64)])
+				case FUNC:
+					in.Save(action.Target, in.V.Funcs[sp.Start+uint64(ind64)])
+				case SPAN:
+					in.Save(action.Target, in.V.Spans[sp.Start+uint64(ind64)])
+				case LIST:
+					in.Save(action.Target, in.V.Lists[sp.Start+uint64(ind64)])
+				case PAIR:
+					in.Save(action.Target, in.V.Pairs[sp.Start+uint64(ind64)])
+				case ID:
+					in.Save(action.Target, in.V.Ids[sp.Start+uint64(ind64)])
+				default:
+					in.Error(action, "unsupported Span type", "index")
+					return true
+				}
 			}
 		case "deep":
 			in.Save(string(action.Variables[0]), in.GetAny(string(action.Variables[1])))
@@ -2923,6 +2958,7 @@ func (in *Interpreter) Run(node_name string) bool {
 			step := float64(length) / float64(cores)
 			for range cores {
 				f_in := &Interpreter{V: &Vars{Names: make(map[string]int)}}
+				f_in.Parent = in
 				f_in.Id = rand.Uint64()
 				GInt.Register(f_in)
 				f_in.Copy2(in)
@@ -4566,7 +4602,7 @@ func (in *Interpreter) Run(node_name string) bool {
 							exe, _ := os.Executable()
 							in.Save(action.Target, exe)
 						case "version":
-							in.Save(action.Target, "4.4.1")
+							in.Save(action.Target, "4.4.2")
 						case "args":
 							l := bytecode.List{}
 							for _, arg := range os.Args {
