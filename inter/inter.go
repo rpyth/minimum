@@ -1443,6 +1443,41 @@ func ListString(l *bytecode.List, in *Interpreter) string {
 	return "[" + strings.Join(elements, ", ") + "]"
 }
 
+func PairStringOld(p *bytecode.Pair, in *Interpreter) string {
+	elements := []string{}
+	for key, item := range p.Ids {
+		i := 0
+		for key[i] != ':' {
+			i++
+		}
+		dkey := key[i+1:]
+		if key[:i] == "str" {
+			dkey = "\"" + dkey + "\""
+		}
+		switch in.V.Slots[item.Addr].Type {
+		case INT:
+			elements = append(elements, dkey+": "+in.V.Ints[in.V.Slots[item.Addr].Index].String())
+		case FLOAT:
+			elements = append(elements, dkey+": "+in.V.Floats[in.V.Slots[item.Addr].Index].String())
+		case BOOL:
+			elements = append(elements, dkey+": "+ternary(in.V.Bools[in.V.Slots[item.Addr].Index], "true", "false"))
+		case BYTE:
+			elements = append(elements, dkey+": "+fmt.Sprintf("b.%d", in.V.Bytes[in.V.Slots[item.Addr].Index]))
+		case STR:
+			elements = append(elements, dkey+": \""+in.V.Strs[in.V.Slots[item.Addr].Index]+"\"")
+		case LIST:
+			ll := in.V.Lists[in.V.Slots[item.Addr].Index]
+			elements = append(elements, dkey+": "+ListString(&ll, in))
+		case FUNC:
+			elements = append(elements, dkey+": "+"func."+in.V.Funcs[in.V.Slots[item.Addr].Index].Name)
+		case PAIR:
+			pp := in.V.Pairs[in.V.Slots[item.Addr].Index]
+			elements = append(elements, dkey+": "+PairString(&pp, in))
+		}
+	}
+	return "{" + strings.Join(elements, ", ") + "}"
+}
+
 func PairString(p *bytecode.Pair, in *Interpreter) string {
 	elements := []string{}
 	for key, item := range p.Ids {
@@ -1453,6 +1488,9 @@ func PairString(p *bytecode.Pair, in *Interpreter) string {
 		dkey := key[i+1:]
 		if key[:i] == "str" {
 			dkey = "\"" + dkey + "\""
+		}
+		for in.Id != item.Id {
+			in = in.Parent
 		}
 		switch in.V.Slots[item.Addr].Type {
 		case INT:
@@ -2741,30 +2779,46 @@ func (in *Interpreter) Run(node_name string) bool {
 				return merr
 			}
 			merr = in.CheckDtype(action, 0, LIST, PAIR)
+			if merr {
+				return merr
+			}
+			owner := in.nameOwner(action.First())
+			item := in.GetAny(action.Second())
+			if owner != in {
+				// Collections must not retain references into a child's movable heap.
+				switch TypeToByte(item) {
+				case LIST:
+					item = owner.CopyList(action.Second(), in)
+				case PAIR:
+					item = owner.CopyPair(action.Second(), in)
+				case SPAN:
+					item = owner.CopySpan(action.Second(), in)
+				}
+			}
 			if in.Type(action.First()) == LIST {
 				l := in.NamedList(action.First())
 				inds := []any{}
 				for _, ind := range action.Variables[2:] {
 					inds = append(inds, in.GetAny(string(ind)))
 				}
-				err := in.DeepAssign(&l, in.GetAny(action.Second()), inds)
+				err := owner.DeepAssign(&l, item, inds)
 				if err != nil {
 					in.Error(action, err.Error(), "index")
 					return true
 				}
-				in.Save(action.Target, l)
+				owner.Save(action.Target, l)
 			} else {
 				l := in.NamedPair(action.First())
 				inds := []any{}
 				for _, ind := range action.Variables[2:] {
 					inds = append(inds, in.GetAny(string(ind)))
 				}
-				err := in.DeepAssign(&l, in.GetAny(action.Second()), inds)
+				err := owner.DeepAssign(&l, item, inds)
 				if err != nil {
 					in.Error(action, err.Error(), "index")
 					return true
 				}
-				in.Save(action.Target, l)
+				owner.Save(action.Target, l)
 			}
 		case "pair":
 			p := bytecode.Pair{}
@@ -5099,7 +5153,7 @@ func (in *Interpreter) DeepAssign(receiver any, item any, inds []any) error {
 				if i < 0 || i >= len(rec.Ids) {
 					return fmt.Errorf("impossible index: %d for list of length %d", i, len(rec.Ids))
 				}
-				if in.V.Slots[rec.Ids[i].Addr].Type == LIST {
+				if in.TypeRef(rec.Ids[i]) == LIST {
 					sublist := in.GetAnyRef(rec.Ids[i]).(bytecode.List)
 					return in.DeepAssign(&sublist, item, inds[1:])
 				}
@@ -5117,12 +5171,10 @@ func (in *Interpreter) DeepAssign(receiver any, item any, inds []any) error {
 			}
 		} else {
 			mainkey := PairKey(in, inds[0])
-			if _, ok := rec.Ids[mainkey]; ok {
-				rec.Ids[mainkey] = in.GetRef(item)
-			} else {
-				PairAppend(rec, in, item, inds[0])
+			if _, ok := rec.Ids[mainkey]; !ok {
+				return fmt.Errorf("invalid pairing key: %v", inds[0])
 			}
-			if in.V.Slots[rec.Ids[mainkey].Addr].Type == LIST {
+			if in.TypeRef(rec.Ids[mainkey]) == LIST {
 				sublist := in.GetAnyRef(rec.Ids[mainkey]).(bytecode.List)
 				return in.DeepAssign(&sublist, item, inds[1:])
 			}
